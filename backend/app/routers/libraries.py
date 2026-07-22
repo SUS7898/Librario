@@ -96,6 +96,14 @@ def scan_all(deep: bool = False, _: User = Depends(security.require_admin)):
     return {"ok": True, "message": f"{kind}을 시작했습니다.", "deep": deep}
 
 
+@router.post("/scan-cancel")
+def scan_cancel(_: User = Depends(security.require_admin)):
+    if not scanner.scan_status.get("running"):
+        return {"ok": False, "message": "진행 중인 스캔이 없습니다."}
+    scanner.request_cancel()
+    return {"ok": True, "message": "스캔 취소를 요청했습니다. 곧 중단됩니다."}
+
+
 @router.get("/scan-status")
 def scan_status(_: User = Depends(security.get_current_user)):
     return dict(scanner.scan_status)

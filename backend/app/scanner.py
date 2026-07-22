@@ -101,6 +101,14 @@ def _split_tag_field(value: str) -> List[str]:
 # 스캔 상태 (전역)
 # ---------------------------------------------------------------------------
 _scan_lock = threading.Lock()
+_cancel_event = threading.Event()
+
+
+class ScanCancelled(Exception):
+    """스캔 취소 신호."""
+    pass
+
+
 scan_status: Dict[str, object] = {
     "running": False,
     "mode": "quick",          # quick | deep
@@ -113,6 +121,8 @@ scan_status: Dict[str, object] = {
     "trashed": 0,             # 사라진 파일 → 휴지통
     "restored": 0,            # 휴지통 → 복구(이동/복원)
     "removed": 0,             # (호환용, 영구삭제는 별도)
+    "cancel_requested": False,  # 취소 요청됨(아직 진행 중)
+    "cancelled": False,         # 취소로 종료됨
     "started_at": None,
     "finished_at": None,
     "error": None,
@@ -123,8 +133,21 @@ def _reset_status():
     scan_status.update({
         "found": 0, "processed": 0, "added": 0, "updated": 0,
         "trashed": 0, "restored": 0, "removed": 0,
+        "cancel_requested": False, "cancelled": False,
         "error": None, "finished_at": None,
     })
+
+
+def request_cancel() -> bool:
+    """진행 중인 스캔에 취소를 요청. 실제 중단은 다음 파일 처리 지점에서 이뤄짐."""
+    _cancel_event.set()
+    scan_status["cancel_requested"] = True
+    return bool(scan_status.get("running"))
+
+
+def _check_cancel():
+    if _cancel_event.is_set():
+        raise ScanCancelled()
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +372,10 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
         return None
 
     for base, dirs, files in os.walk(lib.path):
+        _check_cancel()  # 취소 요청 시 여기서 중단 → 아래 '사라진 파일' 정리(휴지통) 단계로 가지 않음
         dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() != "__macosx"]
         for fn in files:
+            _check_cancel()
             ext = os.path.splitext(fn)[1].lower()
             if ext not in config.SUPPORTED_EXTS:
                 continue
@@ -545,15 +570,20 @@ def scan_library(library_id: int, deep: bool = False):
             _reset_status()
             _scan_library_inner(db, lib, deep=deep)
             settings_store.set_last_run(db, "deep" if deep else "quick")
+        except ScanCancelled:
+            db.rollback()
+            scan_status["cancelled"] = True
         except Exception as e:  # noqa
             scan_status["error"] = str(e)
         finally:
             scan_status["running"] = False
+            scan_status["cancel_requested"] = False
             scan_status["finished_at"] = utcnow().isoformat()
             db.close()
 
 
 def scan_all(deep: bool = False):
+    _cancel_event.clear()  # 전체 스캔 시작점: 취소 흔적 제거
     with _scan_lock:
         db = SessionLocal()
         try:
@@ -562,11 +592,14 @@ def scan_all(deep: bool = False):
             db.close()
     for lid in lib_ids:
         scan_library(lid, deep=deep)
+        if scan_status.get("cancelled"):  # 취소되면 남은 라이브러리는 건너뜀
+            break
 
 
 def scan_library_async(library_id: int, deep: bool = False):
     if scan_status.get("running"):
         return False
+    _cancel_event.clear()
     threading.Thread(target=scan_library, args=(library_id, deep), daemon=True).start()
     return True
 
@@ -574,5 +607,6 @@ def scan_library_async(library_id: int, deep: bool = False):
 def scan_all_async(deep: bool = False):
     if scan_status.get("running"):
         return False
+    _cancel_event.clear()
     threading.Thread(target=scan_all, kwargs={"deep": deep}, daemon=True).start()
     return True

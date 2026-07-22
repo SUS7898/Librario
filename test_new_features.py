@@ -252,6 +252,21 @@ def main():
         check("분석 by_library 존재", any(l["id"] == lib_id for l in j["by_library"]))
         check("분석 저장용량 ≥0", j["totals"]["size"] >= 0)
 
+        # -------- 스캔 취소 --------
+        print("== 스캔 취소 ==")
+        active_before = client.get("/api/books", params={"library": lib_id}).json()["total"]
+        # 취소 이벤트를 미리 세팅 → 다음 스캔은 첫 파일 지점에서 즉시 중단
+        scanner.request_cancel()
+        scanner.scan_library(lib_id)  # 동기, 이벤트 set 상태 → 즉시 취소
+        check("취소 상태 기록(cancelled=True)", scanner.scan_status.get("cancelled") is True)
+        check("취소는 오류가 아님", scanner.scan_status.get("error") is None)
+        # 안전성: 취소로 seen_paths 가 비어도 활성 책을 휴지통에 넣으면 안 됨
+        active_after = client.get("/api/books", params={"library": lib_id}).json()["total"]
+        check("취소 스캔이 활성 책을 휴지통에 넣지 않음", active_after == active_before and active_after >= 1)
+        # 엔트리포인트(scan_all)는 이벤트를 지우고 정상 동작해야 함
+        scanner.scan_all()
+        check("취소 후 재스캔 정상(cancelled=False)", scanner.scan_status.get("cancelled") is False)
+
     print(f"\n결과: {ok} 통과 / {fail} 실패")
     shutil.rmtree(tmp, ignore_errors=True)
     sys.exit(1 if fail else 0)

@@ -675,13 +675,21 @@ async function adminLibraries(body){
       if(s.running){
         const pct = s.found? Math.round((s.processed/Math.max(s.found,1))*100):0;
         const modeLbl = s.mode==='deep'?'심층 스캔':'스캔';
+        const cancelBtn = h('button',{class:'btn sm danger',style:{marginTop:'8px'},
+          disabled: s.cancel_requested?'disabled':null,
+          onclick:async(e)=>{ e.target.disabled=true; e.target.textContent='취소 중…';
+            try{ await api('/api/libraries/scan-cancel',{method:'POST'}); toast('스캔 취소를 요청했습니다.'); }
+            catch(err){ toast(err.message); }
+          }}, s.cancel_requested?'취소 중…':'스캔 취소');
         statusBox.append(
           h('div',{}, `${modeLbl} 중: ${s.library_name||''} — 발견 ${s.found} · 처리 ${s.processed} · 추가 ${s.added} · 갱신 ${s.updated} · 휴지통 ${s.trashed||0} · 복구 ${s.restored||0}`),
-          h('div',{class:'bar'}, h('i',{style:{width:pct+'%'}}))
+          h('div',{class:'bar'}, h('i',{style:{width:pct+'%'}})),
+          cancelBtn
         );
       }else{
         statusBox.append(h('div',{class:'muted'},
-          s.finished_at? `마지막 ${s.mode==='deep'?'심층 ':''}스캔 완료 · 추가 ${s.added} · 갱신 ${s.updated} · 휴지통 ${s.trashed||0} · 복구 ${s.restored||0}${s.error?(' · 오류: '+s.error):''}`
+          s.cancelled? `스캔이 취소되었습니다 · 추가 ${s.added} · 갱신 ${s.updated} (사라진 파일 정리는 건너뜀)`
+          : s.finished_at? `마지막 ${s.mode==='deep'?'심층 ':''}스캔 완료 · 추가 ${s.added} · 갱신 ${s.updated} · 휴지통 ${s.trashed||0} · 복구 ${s.restored||0}${s.error?(' · 오류: '+s.error):''}`
           : '대기 중'));
       }
     }catch(e){}
