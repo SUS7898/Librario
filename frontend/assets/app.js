@@ -720,14 +720,61 @@ async function adminLibraries(body){
 
   function addLibrary(){
     const name=h('input',{class:'input',placeholder:'표시 이름 (예: 웹툰-완결)'});
-    const path=h('input',{class:'input',placeholder:'컨테이너 내부 경로 (예: /books/webtoon)'});
+    const path=h('input',{class:'input',placeholder:'폴더 찾기로 선택하거나 직접 입력'});
     const restricted=h('input',{type:'checkbox'});
     const err=h('div',{class:'err'});
+
+    // ---- 폴더 탐색기 ----
+    const crumb=h('div',{style:{fontSize:'12.5px',fontWeight:'600',margin:'0 0 6px',wordBreak:'break-all',color:'var(--fg,#eee)'}});
+    const listDiv=h('div',{style:{maxHeight:'240px',overflow:'auto',border:'1px solid var(--line,#333)',borderRadius:'8px',padding:'4px'}});
+    const pickBtn=h('button',{class:'btn sm primary',style:{marginTop:'8px',display:'none'}},'이 폴더 선택');
+    const browser=h('div',{style:{display:'none',margin:'6px 0 12px'}}, crumb, listDiv, pickBtn);
+    let current='';
+
+    const folderRow=(label, onClick, pickPath)=> h('div',{
+        style:{display:'flex',alignItems:'center',gap:'8px',padding:'8px 8px',borderRadius:'6px',cursor:'pointer'},
+        onmouseenter:e=>e.currentTarget.style.background='rgba(240,180,90,0.12)',
+        onmouseleave:e=>e.currentTarget.style.background='transparent'},
+      h('span',{onclick:onClick,style:{flex:'1',display:'flex',alignItems:'center',gap:'8px',minWidth:0}},
+        h('span',{},label)),
+      pickPath!=null? h('button',{class:'btn sm',style:{padding:'2px 8px',fontSize:'12px'},
+        onclick:e=>{e.stopPropagation(); path.value=pickPath; browser.style.display='none'; toast('선택됨: '+pickPath);}},'선택') : null
+    );
+
+    async function loadDir(p){
+      current=p;
+      clear(listDiv).append(h('div',{class:'spinner'}));
+      try{
+        const d=await api('/api/libraries/browse'+(p?('?path='+encodeURIComponent(p)):''));
+        crumb.textContent = d.is_root ? '📂 최상위 (마운트된 폴더)' : ('📂 '+d.path);
+        pickBtn.style.display = d.is_root ? 'none' : 'inline-flex';
+        clear(listDiv);
+        if(!d.is_root){
+          listDiv.append(folderRow('⬆  상위 폴더', ()=>loadDir(d.parent||''), null));
+        }
+        if(!d.entries.length){
+          listDiv.append(h('div',{class:'muted',style:{padding:'10px',fontSize:'13px'}},
+            d.is_root?'표시할 폴더가 없습니다. (BROWSE_ROOTS 환경변수로 지정할 수 있어요)':'하위 폴더가 없습니다.'));
+        }
+        d.entries.forEach(en=> listDiv.append(
+          folderRow('📁  '+en.name, ()=>loadDir(en.path), en.path)));
+      }catch(e){ clear(listDiv).append(h('div',{class:'err',style:{padding:'8px'}}, e.message)); }
+    }
+    pickBtn.onclick=()=>{ if(current){ path.value=current; browser.style.display='none'; toast('선택됨: '+current); } };
+
+    const toggleBrowser=()=>{
+      const showing = browser.style.display!=='none';
+      browser.style.display = showing?'none':'block';
+      if(!showing) loadDir(current||'');
+    };
+
     openSheet(h('div',{},
       h('h3',{},'라이브러리 추가'),
-      h('p',{class:'muted',style:{fontSize:'12.5px',margin:'4px 0 16px'}},'경로는 도커 볼륨으로 매핑한 컨테이너 내부 경로입니다.'),
+      h('p',{class:'muted',style:{fontSize:'12.5px',margin:'4px 0 16px'}},'도커 볼륨으로 매핑한 폴더 안에서 선택하세요.'),
       h('label',{class:'field'},h('span',{},'이름'),name),
       h('label',{class:'field'},h('span',{},'폴더 경로'),path),
+      h('button',{class:'btn sm',style:{margin:'-4px 0 4px'},onclick:toggleBrowser},'📁 폴더 찾기'),
+      browser,
       h('label',{style:{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}},restricted,h('span',{},'제한(성인/R17) — 권한 있는 사용자만 접근')),
       err,
       h('div',{class:'modal-actions'},

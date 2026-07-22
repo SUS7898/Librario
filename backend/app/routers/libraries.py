@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from .. import security, schemas, scanner
+from .. import security, schemas, scanner, config
 from ..database import get_db
 from ..models import User, Library, Series, Book
 
@@ -99,3 +99,45 @@ def scan_all(deep: bool = False, _: User = Depends(security.require_admin)):
 @router.get("/scan-status")
 def scan_status(_: User = Depends(security.get_current_user)):
     return dict(scanner.scan_status)
+
+
+def _within_roots(real_path, roots):
+    for r in roots:
+        rr = os.path.realpath(r)
+        if real_path == rr or real_path.startswith(rr + os.sep):
+            return True
+    return False
+
+
+@router.get("/browse")
+def browse_folders(path: str = "", _: User = Depends(security.require_admin)):
+    """라이브러리 추가용 폴더 탐색기. path 가 비면 루트 목록을 반환."""
+    roots = config.get_browse_roots()
+    # 루트 목록
+    if not path:
+        entries = [{"name": os.path.basename(r) or r, "path": r} for r in roots]
+        return {"path": "", "parent": None, "is_root": True, "entries": entries}
+    # 경로 정규화 + 허용 루트 안에 있는지 확인 (상위 탈출 방지)
+    real = os.path.realpath(path)
+    if not _within_roots(real, roots):
+        raise HTTPException(status_code=400, detail="접근이 허용되지 않은 경로입니다.")
+    if not os.path.isdir(real):
+        raise HTTPException(status_code=404, detail="폴더가 존재하지 않습니다.")
+    entries = []
+    try:
+        for name in sorted(os.listdir(real), key=lambda s: s.lower()):
+            if name.startswith("."):
+                continue
+            full = os.path.join(real, name)
+            if os.path.isdir(full) and not os.path.islink(full):
+                entries.append({"name": name, "path": full})
+    except OSError as e:
+        raise HTTPException(status_code=400, detail=f"폴더를 읽을 수 없습니다: {e}")
+    # 상위 폴더 계산: 현재가 루트면 루트목록("")으로, 아니면 부모(루트 안이면)
+    is_a_root = any(real == os.path.realpath(r) for r in roots)
+    if is_a_root:
+        parent = ""
+    else:
+        parentdir = os.path.dirname(real)
+        parent = parentdir if _within_roots(parentdir, roots) else ""
+    return {"path": real, "parent": parent, "is_root": False, "entries": entries}

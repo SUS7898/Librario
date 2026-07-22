@@ -47,6 +47,7 @@ def main():
     os.environ["DATA_DIR"] = str(data_dir)
     os.environ["SCAN_ON_STARTUP"] = "false"
     os.environ["SCHEDULER_ENABLED"] = "false"
+    os.environ["BROWSE_ROOTS"] = str(lib_dir)
     os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-32b"
 
     sys.path.insert(0, str(Path(__file__).resolve().parent / "backend"))
@@ -226,6 +227,21 @@ def main():
                        params={"provider": "google", "query": "python"})
         # 오프라인이면 results=[] 지만 200 이어야 함
         check("메타 검색 200(오프라인 허용)", r.status_code == 200 and "results" in r.json())
+
+        # -------- 폴더 탐색기 (라이브러리 추가 GUI) --------
+        print("== 폴더 탐색기 ==")
+        r = client.get("/api/libraries/browse")
+        j = r.json()
+        check("루트 목록 is_root", r.status_code == 200 and j["is_root"] is True)
+        check("루트에 마운트 폴더 노출", any(e["path"] == str(lib_dir) for e in j["entries"]))
+        r = client.get("/api/libraries/browse", params={"path": str(lib_dir)})
+        j = r.json()
+        check("폴더 진입 → 하위폴더 '판타지'", any(e["name"] == "판타지" for e in j["entries"]))
+        check("루트 폴더의 parent 는 루트목록('')", j["parent"] == "")
+        r = client.get("/api/libraries/browse", params={"path": "/etc"})
+        check("허용 루트 밖 경로 차단(400)", r.status_code == 400)
+        r = client.get("/api/libraries/browse", params={"path": str(lib_dir / "판타지" / ".." / ".." / ".." )})
+        check("상위 탈출(../) 차단", r.status_code == 400)
 
         # -------- 분석 --------
         print("== 분석 ==")

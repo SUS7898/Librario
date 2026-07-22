@@ -56,6 +56,36 @@ THUMB_QUALITY = _int("THUMB_QUALITY", 82)
 # 컨테이너 안 경로 기준(도커 볼륨 매핑 후 경로)으로 적어야 합니다.
 SEED_LIBRARIES = os.environ.get("SEED_LIBRARIES", "").strip()
 
+# ---- 폴더 탐색기(라이브러리 추가 GUI)가 보여줄 최상위 경로 ----
+# 지정하지 않으면 컨테이너 "/" 아래에서 시스템 폴더를 제외한 마운트만 자동 노출합니다.
+#   예) BROWSE_ROOTS="/Comic;/Novel;/Book"
+BROWSE_ROOTS = os.environ.get("BROWSE_ROOTS", "").strip()
+_SYS_DIRS = {"app", "bin", "boot", "dev", "etc", "home", "lib", "lib32", "lib64",
+             "libx32", "media", "mnt", "opt", "proc", "root", "run", "sbin",
+             "srv", "sys", "tmp", "usr", "var", "data"}
+
+
+def get_browse_roots():
+    """폴더 탐색기의 시작 루트 목록(절대경로)."""
+    roots = []
+    if BROWSE_ROOTS:
+        for chunk in BROWSE_ROOTS.replace(",", ";").split(";"):
+            c = chunk.strip().rstrip("/")
+            if c and os.path.isdir(c) and c not in roots:
+                roots.append(c)
+    if not roots:
+        try:
+            for name in sorted(os.listdir("/")):
+                if name in _SYS_DIRS or name.startswith("."):
+                    continue
+                p = "/" + name
+                if os.path.isdir(p) and not os.path.islink(p):
+                    roots.append(p)
+        except OSError:
+            pass
+    return roots
+
+
 # 로그인 유지(remember me)를 끈 경우의 짧은 만료 (분)
 SESSION_TOKEN_EXPIRE_MINUTES = _int("SESSION_TOKEN_EXPIRE_MINUTES", 60 * 24)  # 1일
 
