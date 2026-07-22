@@ -1,0 +1,153 @@
+# -*- coding: utf-8 -*-
+import io
+import os
+from pathlib import Path
+from typing import Optional
+
+from . import config, formats
+
+try:
+    from PIL import Image
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+
+def book_thumb_path(book_id: int) -> Path:
+    return config.THUMB_DIR / f"book_{book_id}.jpg"
+
+
+def series_thumb_path(series_id: int) -> Path:
+    return config.THUMB_DIR / f"series_{series_id}.jpg"
+
+
+def _resize_to_jpeg(raw: bytes) -> Optional[bytes]:
+    if not _HAS_PIL:
+        return None
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception:
+        return None
+    try:
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        w, h = im.size
+        if w > config.THUMB_WIDTH:
+            ratio = config.THUMB_WIDTH / float(w)
+            im = im.resize((config.THUMB_WIDTH, max(1, int(h * ratio))), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=config.THUMB_QUALITY, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _placeholder_jpeg(title: str) -> Optional[bytes]:
+    """표지를 못 만든 경우(주로 TXT) 제목을 그려 넣은 커버 생성."""
+    if not _HAS_PIL:
+        return None
+    try:
+        from PIL import ImageDraw, ImageFont
+        W, H = config.THUMB_WIDTH, int(config.THUMB_WIDTH * 1.4)
+        # 제목 해시로 배경색 결정
+        hue = sum(ord(c) for c in (title or "?")) % 360
+        r, g, b = _hsv_to_rgb(hue / 360.0, 0.35, 0.55)
+        im = Image.new("RGB", (W, H), (r, g, b))
+        d = ImageDraw.Draw(im)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+        text = (title or "TXT")[:40]
+        # 단순 줄바꿈
+        lines, cur = [], ""
+        for ch in text:
+            cur += ch
+            if len(cur) >= 12:
+                lines.append(cur)
+                cur = ""
+        if cur:
+            lines.append(cur)
+        y = H // 2 - (len(lines) * 14) // 2
+        for ln in lines[:6]:
+            d.text((14, y), ln, fill=(255, 255, 255), font=font)
+            y += 16
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=config.THUMB_QUALITY)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _hsv_to_rgb(h, s, v):
+    import colorsys
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def raw_cover_for_book(path: str, fmt: str) -> Optional[bytes]:
+    fmt = fmt.lower()
+    if fmt in ("cbz", "zip"):
+        return formats.comic_cover_bytes(path)
+    if fmt == "epub":
+        info = formats.epub_info(path)
+        return info.get("cover_bytes")  # type: ignore
+    if fmt == "pdf":
+        return formats.pdf_cover_bytes(path)
+    return None
+
+
+def generate_book_thumbnail(book_id: int, path: str, fmt: str, title: str = "") -> bool:
+    """성공 시 True. 표지를 못 얻으면 TXT 등은 플레이스홀더 생성."""
+    raw = raw_cover_for_book(path, fmt)
+    jpeg = _resize_to_jpeg(raw) if raw else None
+    if jpeg is None:
+        jpeg = _placeholder_jpeg(title)
+    if jpeg is None:
+        return False
+    try:
+        dst = book_thumb_path(book_id)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(jpeg)
+        return True
+    except OSError:
+        return False
+
+
+def save_cover_from_bytes(book_id: int, raw: bytes) -> bool:
+    """외부에서 내려받은 표지 이미지를 리사이즈해서 저장 (메타데이터 표지 교체용)."""
+    jpeg = _resize_to_jpeg(raw) if raw else None
+    if jpeg is None:
+        return False
+    try:
+        dst = book_thumb_path(book_id)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(jpeg)
+        return True
+    except OSError:
+        return False
+
+
+def link_series_thumbnail(series_id: int, book_id: int) -> bool:
+    src = book_thumb_path(book_id)
+    if not src.exists():
+        return False
+    try:
+        dst = series_thumb_path(series_id)
+        with open(src, "rb") as fi, open(dst, "wb") as fo:
+            fo.write(fi.read())
+        return True
+    except OSError:
+        return False
+
+
+def delete_book_thumbnail(book_id: int):
+    for p in (book_thumb_path(book_id),):
+        try:
+            if p.exists():
+                os.remove(p)
+        except OSError:
+            pass

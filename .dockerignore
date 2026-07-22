@@ -1,0 +1,14 @@
+# 개발/테스트 산출물은 이미지에 넣지 않습니다.
+.venv/
+**/__pycache__/
+*.pyc
+data/
+*.db
+*.sqlite
+*.sqlite3
+.git/
+.gitignore
+.DS_Store
+smoke_test.py
+test_*.py
+*.log

@@ -1,0 +1,55 @@
+# =============================================================================
+# Librario · Portainer 스택 (GitHub 저장소에서 그대로 배포)
+# Portainer → Stacks → Add stack → Build method: "Repository"
+#   Repository URL : (이 저장소의 GitHub 주소)
+#   Compose path   : docker-compose.yml
+#   GitOps updates : ON  (Polling 5분 또는 Webhook)  ← 자동 업데이트 핵심
+# =============================================================================
+services:
+  librario:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: librario:latest
+    container_name: librario
+    restart: unless-stopped
+
+    ports:
+      # 호스트포트:컨테이너포트  → 시놀로지 역방향 프록시가 이 호스트포트를 가리킵니다.
+      # 8580 이 이미 쓰이면 8680 등으로 바꾸세요. (DSM 이 5000/5001 사용)
+      - "8580:8080"
+
+    environment:
+      # --- 필수: 반드시 길고 무작위한 값으로 교체 (한 번 정하면 바꾸지 마세요) ---
+      SECRET_KEY: "${SECRET_KEY:-please-change-me-to-a-long-random-string-32chars+}"
+
+      # 예약 스캔 시각(deep_at)이 한국시간 기준으로 동작하도록
+      TZ: "Asia/Seoul"
+
+      # 쿠키 보안 플래그.
+      #  - 시놀로지 역방향 프록시(HTTPS)로만 접속 → "true" 로 바꾸세요(권장).
+      #  - http://NAS내부IP:8580 으로 직접 접속해 테스트할 땐 반드시 "false".
+      #    (true 인데 http 로 접속하면 로그인이 유지되지 않습니다.)
+      COOKIE_SECURE: "false"
+
+      # 시작 시 자동 스캔 + 예약 스캔 스케줄러 사용
+      SCAN_ON_STARTUP: "true"
+      SCHEDULER_ENABLED: "true"
+
+      # 최초 1회 라이브러리 자동 등록 (형식: 이름::컨테이너경로 를 ; 로 구분)
+      # 아래 volumes 의 '컨테이너 내부 경로'와 반드시 일치시켜야 합니다.
+      SEED_LIBRARIES: "웹툰-완결::/books/webtoon-final;웹툰-완결(R17)::/books/webtoon-final-r17;웹툰-연재중::/books/webtoon-ongoing;만화-연재중::/books/comic-ongoing;만화-완결::/books/comic-final"
+
+    volumes:
+      # DB·썸네일·시크릿이 저장되는 영구 볼륨 (컨테이너를 지워도 데이터 보존)
+      - librario-data:/data
+
+      # ↓↓↓ 시놀로지 실제 경로(왼쪽) → 컨테이너 내부 경로(오른쪽), 읽기 전용(:ro) ↓↓↓
+      - /volume1/Tier/Tier_2/Comic/WebToon/완결:/books/webtoon-final:ro
+      - "/volume1/Tier/Tier_2/Comic/WebToon/완결(R17):/books/webtoon-final-r17:ro"
+      - /volume1/Tier/Tier_2/Comic/WebToon/연재중:/books/webtoon-ongoing:ro
+      - /volume1/Tier/Tier_2/Comic/연재중:/books/comic-ongoing:ro
+      - /volume1/Tier/Tier_2/Comic/완결:/books/comic-final:ro
+
+volumes:
+  librario-data:
