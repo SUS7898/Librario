@@ -128,6 +128,40 @@ Portainer 가 저장소를 받아 `Dockerfile` 로 이미지를 빌드하고 컨
 
 ---
 
+## 4-2. 자동 빌드 파이프라인 (GitHub Actions → Docker Hub)
+
+NAS 에서 직접 빌드하지 않고, **GitHub Actions 가 이미지를 빌드해 Docker Hub 에 올리고 NAS 는 받기만** 하는 방식입니다. NAS 부담이 적고 빌드 중 네트워크 오류도 없습니다.
+
+```
+코드 수정 → git push → GitHub Actions 빌드(amd64+arm64) → Docker Hub 갱신 → NAS 가 pull
+```
+
+**준비(최초 1회):**
+1. Docker Hub 저장소 생성: `dntmd7898/librario`, 그리고 Account Settings → Security → **Access Token(Read & Write)** 발급.
+2. GitHub 저장소 → Settings → Secrets and variables → Actions → New repository secret:
+   - `DOCKERHUB_USERNAME` = `dntmd7898`
+   - `DOCKERHUB_TOKEN` = 위 토큰
+3. 저장소에 `.github/workflows/docker.yml` 포함(이미 들어있음). push 하면 자동 실행됩니다.
+
+> 이미지는 `linux/amd64` + `linux/arm64` **멀티아키텍처**로 빌드되어, DS423(ARM64)·DS423+(x86_64) 어느 쪽이든 NAS 가 맞는 걸 자동으로 받습니다.
+
+**업데이트 반영:**
+- Portainer → Stacks → librario → **Update the stack**, 이때 **Re-pull image 켜기** → 최신 이미지를 받아 교체.
+- 완전 자동으로 하려면 **Watchtower**(아래)를 붙이면 Docker Hub 갱신을 감지해 NAS 가 스스로 pull·재시작합니다.
+
+**Watchtower(선택):** Portainer 스택에 아래 서비스를 추가하면 5분마다 새 이미지를 확인해 자동 교체합니다.
+```yaml
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup librario
+```
+
+---
+
 ## 5. 시놀로지 역방향 프록시로 외부 접속
 
 목표: `https://librario.내도메인.com` → 컨테이너(`localhost:8580`).
