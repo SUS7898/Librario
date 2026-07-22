@@ -76,6 +76,11 @@ Portainer 가 저장소를 받아 `Dockerfile` 로 이미지를 빌드하고 컨
 첫 빌드는 의존성 설치로 몇 분 걸릴 수 있습니다.
 
 ### 배포 전에 꼭 수정할 것 — `docker-compose.yml`
+경로
+
+COMIC_PATH = 
+NOVEL_PATH = 
+BOOK_PATH  = 
 
 - **`SECRET_KEY`**: 길고 무작위한 값으로 교체(로그인 토큰 서명 키, 한 번 정하면 유지).
 - **`volumes`**: `왼쪽=시놀로지 실제 경로`, `오른쪽=컨테이너 내부 경로`. 본인 폴더 구조에 맞게.
