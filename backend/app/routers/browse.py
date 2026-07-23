@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
 from .. import security, schemas, serializers, thumbnails
@@ -37,7 +37,8 @@ def home(user: User = Depends(security.get_current_user), db: Session = Depends(
          limit: int = Query(20, le=50)):
     ids = _acc_ids(db, user)
     if not ids:
-        return {"continue_reading": [], "recently_added_books": [],
+        return {"continue_reading": [], "recently_read_books": [], "recently_read_series": [],
+                "recently_added_books": [], "recently_added_series": [],
                 "recently_updated_series": [], "recently_updated_books": [],
                 "on_deck": []}
 
@@ -64,9 +65,42 @@ def home(user: User = Depends(security.get_current_user), db: Session = Depends(
         .order_by(Book.updated_at.desc()).limit(limit)
     ).all()
 
+    # 최근 읽은 책: 완독 여부와 무관하게 마지막으로 읽은 순
+    read_books = db.scalars(
+        select(Book).join(ReadProgress, ReadProgress.book_id == Book.id)
+        .where(ReadProgress.user_id == user.id,
+               Book.library_id.in_(ids), Book.status == "active")
+        .order_by(ReadProgress.updated_at.desc()).limit(limit)
+    ).all()
+
+    # 최근 읽은 시리즈: 위 기록에서 시리즈 단위로 중복 제거(읽은 순서 유지)
+    read_series = []
+    seen_sid = set()
+    for b in db.scalars(
+        select(Book).join(ReadProgress, ReadProgress.book_id == Book.id)
+        .where(ReadProgress.user_id == user.id,
+               Book.library_id.in_(ids), Book.status == "active")
+        .order_by(ReadProgress.updated_at.desc()).limit(limit * 5)
+    ).all():
+        if b.series_id and b.series_id not in seen_sid:
+            seen_sid.add(b.series_id)
+            if b.series is not None and (b.series.book_count or 0) > 0:
+                read_series.append(b.series)
+            if len(read_series) >= limit:
+                break
+
+    # 최근 추가된 시리즈
+    added_series = db.scalars(
+        select(Series).where(Series.library_id.in_(ids), Series.book_count > 0)
+        .order_by(Series.created_at.desc(), Series.id.desc()).limit(limit)
+    ).all()
+
     return {
         "continue_reading": [serializers.book_to_dict(db, b, user, with_tags=False) for b in cont_rows],
+        "recently_read_books": [serializers.book_to_dict(db, b, user, with_tags=False) for b in read_books],
+        "recently_read_series": [serializers.series_to_dict(db, s, user, with_tags=False) for s in read_series],
         "recently_added_books": [serializers.book_to_dict(db, b, user, with_tags=False) for b in added],
+        "recently_added_series": [serializers.series_to_dict(db, s, user, with_tags=False) for s in added_series],
         "recently_updated_series": [serializers.series_to_dict(db, s, user, with_tags=False) for s in upd_series],
         "recently_updated_books": [serializers.book_to_dict(db, b, user, with_tags=False) for b in upd_books],
     }
@@ -97,12 +131,23 @@ def list_series(user: User = Depends(security.get_current_user), db: Session = D
             )
         )
 
-    sort_col = {
-        "name": Series.sort_name,
-        "created": Series.created_at,
-        "updated": Series.updated_at,
-        "books": Series.book_count,
-    }.get(sort, Series.sort_name)
+    if sort == "read":
+        # 시리즈 내 책들의 마지막 읽은 시각 기준. 읽은 기록이 있는 시리즈만.
+        last_read = (
+            select(func.max(ReadProgress.updated_at))
+            .select_from(ReadProgress).join(Book, Book.id == ReadProgress.book_id)
+            .where(Book.series_id == Series.id, ReadProgress.user_id == user.id)
+            .correlate(Series).scalar_subquery()
+        )
+        stmt = stmt.where(last_read.isnot(None))
+        sort_col = last_read
+    else:
+        sort_col = {
+            "name": Series.sort_name,
+            "created": Series.created_at,
+            "updated": Series.updated_at,
+            "books": Series.book_count,
+        }.get(sort, Series.sort_name)
     sort_col = sort_col.desc() if order == "desc" else sort_col.asc()
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
@@ -133,6 +178,7 @@ def series_detail(series_id: int, user: User = Depends(security.get_current_user
 def list_books(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
                library: int = Query(None), series: int = Query(None), search: str = Query(None),
                tag: str = Query(None), fmt: str = Query(None),
+               progress: str = Query(None),  # reading | completed
                sort: str = Query("title"), order: str = Query("asc"),
                page: int = Query(1, ge=1), size: int = Query(40, ge=1, le=200)):
     ids = _acc_ids(db, user)
@@ -157,12 +203,25 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
             )
         )
 
-    sort_col = {
-        "title": Book.sort_title,
-        "created": Book.created_at,
-        "updated": Book.updated_at,
-        "size": Book.file_size,
-    }.get(sort, Book.sort_title)
+    # 읽기 기록 기반(최근 읽은/이어보기/완독)은 ReadProgress 를 조인
+    need_progress = (sort == "read") or (progress in ("reading", "completed"))
+    if need_progress:
+        stmt = stmt.join(ReadProgress, and_(ReadProgress.book_id == Book.id,
+                                            ReadProgress.user_id == user.id))
+        if progress == "reading":
+            stmt = stmt.where(ReadProgress.completed == False)  # noqa: E712
+        elif progress == "completed":
+            stmt = stmt.where(ReadProgress.completed == True)   # noqa: E712
+
+    if sort == "read":
+        sort_col = ReadProgress.updated_at
+    else:
+        sort_col = {
+            "title": Book.sort_title,
+            "created": Book.created_at,
+            "updated": Book.updated_at,
+            "size": Book.file_size,
+        }.get(sort, Book.sort_title)
     sort_col = sort_col.desc() if order == "desc" else sort_col.asc()
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0

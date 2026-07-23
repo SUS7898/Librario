@@ -19,6 +19,7 @@ def _lib_dict(db: Session, lib: Library):
         "name": lib.name,
         "path": lib.path,
         "restricted": lib.restricted,
+        "sort_order": lib.sort_order or 0,
         "series_count": series_cnt,
         "book_count": book_cnt,
     }
@@ -27,7 +28,7 @@ def _lib_dict(db: Session, lib: Library):
 @router.get("")
 def list_libraries(user: User = Depends(security.get_current_user), db: Session = Depends(get_db)):
     ids = set(security.accessible_library_ids(db, user))
-    libs = db.scalars(select(Library).order_by(Library.name)).all()
+    libs = db.scalars(select(Library).order_by(Library.sort_order, Library.name)).all()
     return [_lib_dict(db, l) for l in libs if l.id in ids]
 
 
@@ -39,8 +40,9 @@ def create_library(body: schemas.LibraryCreateIn, _: User = Depends(security.req
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     if db.scalar(select(Library).where(Library.path == path)):
         raise HTTPException(status_code=400, detail="이미 등록된 경로입니다.")
+    max_order = db.scalar(select(func.max(Library.sort_order))) or 0
     lib = Library(name=body.name.strip() or os.path.basename(path), path=path,
-                  restricted=body.restricted)
+                  restricted=body.restricted, sort_order=max_order + 1)
     db.add(lib)
     db.commit()
     db.refresh(lib)
@@ -94,6 +96,19 @@ def scan_all(deep: bool = False, _: User = Depends(security.require_admin)):
         raise HTTPException(status_code=409, detail="이미 스캔이 진행 중입니다.")
     kind = "전체 심층 스캔" if deep else "전체 스캔"
     return {"ok": True, "message": f"{kind}을 시작했습니다.", "deep": deep}
+
+
+@router.put("/order")
+def reorder_libraries(body: schemas.LibraryOrderIn, _: User = Depends(security.require_admin),
+                      db: Session = Depends(get_db)):
+    """전달된 id 순서대로 표시 순서를 다시 매깁니다."""
+    for idx, lib_id in enumerate(body.ids):
+        lib = db.get(Library, lib_id)
+        if lib:
+            lib.sort_order = idx
+    db.commit()
+    libs = db.scalars(select(Library).order_by(Library.sort_order, Library.name)).all()
+    return [_lib_dict(db, l) for l in libs]
 
 
 @router.post("/scan-cancel")

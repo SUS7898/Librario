@@ -243,6 +243,50 @@ def main():
         r = client.get("/api/libraries/browse", params={"path": str(lib_dir / "판타지" / ".." / ".." / ".." )})
         check("상위 탈출(../) 차단", r.status_code == 400)
 
+        # -------- 홈 신규 섹션 / 읽기 기록 정렬 / 라이브러리 순서 --------
+        print("== 홈 섹션 · 읽기기록 · 라이브러리 순서 ==")
+        r = client.get("/api/home")
+        hj = r.json()
+        for k in ("continue_reading", "recently_read_books", "recently_read_series",
+                  "recently_added_books", "recently_added_series",
+                  "recently_updated_series", "recently_updated_books"):
+            check(f"home 키 존재: {k}", k in hj)
+
+        # 진행률을 기록하면 '최근 읽은'에 등장해야 함 (2페이지 책이라 page=0 이어야 '읽는 중')
+        client.put(f"/api/books/{move_id}/progress", json={"page": 0})
+        r = client.get("/api/home")
+        rb = [b["id"] for b in r.json()["recently_read_books"]]
+        check("읽은 책이 최근 읽은 책에 포함", move_id in rb)
+
+        r = client.get("/api/books", params={"sort": "read", "order": "desc"})
+        check("sort=read 는 읽은 책만 반환", r.status_code == 200
+              and all(b["id"] == move_id for b in r.json()["items"])
+              and r.json()["total"] >= 1)
+        r = client.get("/api/books", params={"progress": "reading"})
+        check("progress=reading 필터", r.status_code == 200 and r.json()["total"] == 1)
+        r = client.get("/api/books", params={"progress": "completed"})
+        check("progress=completed 필터(아직 완독 없음)", r.status_code == 200 and r.json()["total"] == 0)
+        # 마지막 페이지 → 자동 완독 → 필터 결과가 뒤바뀌어야 함
+        client.put(f"/api/books/{move_id}/progress", json={"page": 1})
+        r = client.get("/api/books", params={"progress": "completed"})
+        check("마지막 페이지 도달 → 완독 필터에 포함", r.json()["total"] == 1)
+        r = client.get("/api/books", params={"progress": "reading"})
+        check("완독 후 읽는중 필터에서 제외", r.json()["total"] == 0)
+        r = client.get("/api/series", params={"sort": "read", "order": "desc"})
+        check("시리즈 sort=read", r.status_code == 200 and r.json()["total"] >= 1)
+
+        # 라이브러리 순서 변경
+        r = client.post("/api/libraries", json={"name": "두번째", "path": str(lib_dir / "판타지"),
+                                                "restricted": False})
+        lib2 = r.json()["id"]
+        r = client.get("/api/libraries")
+        check("새 라이브러리는 뒤로 정렬", [l["id"] for l in r.json()][-1] == lib2)
+        r = client.put("/api/libraries/order", json={"ids": [lib2, lib_id]})
+        check("순서 변경 반영", [l["id"] for l in r.json()] == [lib2, lib_id])
+        r = client.get("/api/libraries")
+        check("순서 유지(재조회)", [l["id"] for l in r.json()] == [lib2, lib_id])
+        check("sort_order 노출", r.json()[0]["sort_order"] == 0)
+
         # -------- 분석 --------
         print("== 분석 ==")
         r = client.get("/api/analytics")

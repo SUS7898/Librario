@@ -48,6 +48,8 @@ class Library(Base):
     path = Column(String(1024), unique=True, nullable=False)
     # restricted=True 이면 명시적으로 권한 부여받은 사용자(+관리자)만 접근 가능 (예: 성인물)
     restricted = Column(Boolean, nullable=False, default=False)
+    # 사용자가 지정한 표시 순서 (작을수록 앞)
+    sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=utcnow)
 
     series = relationship("Series", back_populates="library", cascade="all, delete-orphan")

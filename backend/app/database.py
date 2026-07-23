@@ -54,6 +54,9 @@ _COLUMN_MIGRATIONS = {
     "series": [
         ("description", "TEXT"),
     ],
+    "libraries": [
+        ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+    ],
 }
 
 

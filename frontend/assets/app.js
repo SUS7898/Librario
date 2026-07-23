@@ -7,6 +7,8 @@
 const DUCK = `<svg viewBox="0 0 48 48" fill="none"><path d="M8 11c5-2 11-2 16 1 5-3 11-3 16-1v26c-5-2-11-2-16 1-5-3-11-3-16-1V11Z" fill="#f0b45a"/><path d="M24 13v26" stroke="#221a08" stroke-width="1.5" opacity="0.55"/><path d="M29 6h7v11l-3.5-2.4L29 17V6Z" fill="#d9973f"/></svg>`;
 const IC = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
+  shelf:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18"/><path d="M3 12h18"/><path d="M3 20h18"/><rect x="5" y="6" width="3" height="6"/><rect x="10" y="6" width="3" height="6"/><rect x="5" y="14" width="3" height="6"/><rect x="10" y="14" width="4" height="6"/></svg>',
+  image:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3 3L16 12l3 3"/></svg>',
   library:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="6" height="16" rx="1"/><rect x="10" y="4" width="5" height="16" rx="1"/><path d="M17 5l3.5.9-2.7 14.4-3.5-.9"/></svg>',
   search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>',
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2.2-1.3L14 2h-4l-.4 2.1a7 7 0 0 0-2.2 1.3l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.3-.9a7 7 0 0 0 2.2 1.3L10 22h4l.4-2.1a7 7 0 0 0 2.2-1.3l2.3.9 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z"/></svg>',
@@ -26,14 +28,26 @@ let overlayStack = [];
 
 /* ---------- 독서 환경설정 (localStorage) ---------- */
 const PREF_KEY = 'librario_prefs_v1';
+const HOME_SECTIONS = [
+  {id:'continue',      label:'이어보기',            key:'continue_reading',        kind:'book',   more:'reading-books'},
+  {id:'read_books',    label:'최근 읽은 책',        key:'recently_read_books',     kind:'book',   more:'read-books'},
+  {id:'read_series',   label:'최근 읽은 시리즈',    key:'recently_read_series',    kind:'series', more:'read-series'},
+  {id:'added_books',   label:'최근 추가된 책',      key:'recently_added_books',    kind:'book',   more:'added-books'},
+  {id:'added_series',  label:'최근 추가된 시리즈',  key:'recently_added_series',   kind:'series', more:'added-series'},
+  {id:'upd_series',    label:'최근 업데이트된 시리즈', key:'recently_updated_series', kind:'series', more:'updated-series'},
+  {id:'upd_books',     label:'최근 업데이트된 책',  key:'recently_updated_books',  kind:'book',   more:'updated-books'},
+];
 const defaultPrefs = {
   comicMode: 'webtoon',   // webtoon | paged
-  comicFit: 'width',      // width | height
+  comicFit: 'width',      // width | height | contain | original
+  comicZoom: 100,         // 50~300 (%)
   fontSize: 110,          // %
   fontFamily: 'sans',     // sans | serif
   lineHeight: 1.7,
   theme: 'dark',          // light | sepia | dark
   epubFlow: 'paginated',  // paginated | scrolled
+  homeOrder: HOME_SECTIONS.map(s=>s.id),
+  homeHidden: [],
 };
 function loadPrefs(){ try{ return {...defaultPrefs, ...JSON.parse(localStorage.getItem(PREF_KEY)||'{}')}; }catch(e){ return {...defaultPrefs}; } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
@@ -176,6 +190,7 @@ function renderLogin(){
    ========================================================================== */
 const TABS = [
   {id:'home', label:'홈', icon:IC.home, route:'#/home'},
+  {id:'libraries', label:'라이브러리', icon:IC.shelf, route:'#/libraries'},
   {id:'library', label:'서재', icon:IC.library, route:'#/library'},
   {id:'search', label:'검색', icon:IC.search, route:'#/search'},
   {id:'settings', label:'설정', icon:IC.gear, route:'#/settings'},
@@ -218,7 +233,8 @@ function currentQuery(){
 }
 function activeTab(){
   const hp = location.hash.slice(2);
-  if(hp.startsWith('home')) return 'home';
+  if(hp.startsWith('home')||hp.startsWith('list')) return 'home';
+  if(hp.startsWith('libraries')) return 'libraries';
   if(hp.startsWith('library')||hp.startsWith('series')) return 'library';
   if(hp.startsWith('search')) return 'search';
   if(hp.startsWith('settings')) return 'settings';
@@ -234,9 +250,11 @@ function renderNav(){
 }
 
 let adminScanTimer = null;
+let homeScanTimer = null;
 async function route(){
   if(!state.user) return;
   if(adminScanTimer){ clearInterval(adminScanTimer); adminScanTimer=null; }
+  if(homeScanTimer){ clearInterval(homeScanTimer); homeScanTimer=null; }
   renderNav();
   const view = $('#view'); if(!view) return;
   const hp = location.hash.slice(2);
@@ -244,7 +262,9 @@ async function route(){
   window.scrollTo(0,0);
   try{
     if(hp.startsWith('home')) await viewHome(view);
+    else if(hp.startsWith('libraries')) await viewLibraries(view);
     else if(hp.startsWith('library')) await viewLibrary(view);
+    else if(hp.startsWith('list')) await viewList(view);
     else if(hp.startsWith('series/')) await viewSeries(view, +hp.split('/')[1]);
     else if(hp.startsWith('search')) await viewSearch(view);
     else if(hp.startsWith('settings')) await viewSettings(view);
@@ -319,10 +339,13 @@ function seriesCard(s){
   );
   return card;
 }
-function hrow(title, items, node){
+function hrow(title, items, node, moreType){
   if(!items || !items.length) return null;
   return h('div',{class:'row'},
-    h('div',{class:'row-head'}, h('h2',{},title)),
+    h('div',{class:'row-head'},
+      h('h2',{}, title),
+      moreType ? h('a',{class:'more-link', href:'#/list?type='+moreType}, '전체보기 ›') : null
+    ),
     h('div',{class:'hscroll'}, items.map(node))
   );
 }
@@ -330,26 +353,161 @@ function hrow(title, items, node){
 /* ==========================================================================
    홈
    ========================================================================== */
+function homeSectionsInOrder(){
+  const byId = Object.fromEntries(HOME_SECTIONS.map(s=>[s.id,s]));
+  const order = (prefs.homeOrder||[]).filter(id=>byId[id]);
+  HOME_SECTIONS.forEach(s=>{ if(!order.includes(s.id)) order.push(s.id); }); // 새로 추가된 섹션 보정
+  const hidden = new Set(prefs.homeHidden||[]);
+  return order.map(id=>byId[id]).filter(s=>!hidden.has(s.id));
+}
+
 async function viewHome(view){
-  const data = await api('/api/home');
-  const rows = [
-    hrow('이어보기', data.continue_reading, bookCard),
-    hrow('최근 추가된 책', data.recently_added_books, bookCard),
-    hrow('최근 업데이트된 시리즈', data.recently_updated_series, seriesCard),
-    hrow('최근 업데이트된 책', data.recently_updated_books, bookCard),
-  ].filter(Boolean);
+  const banner = h('div',{});          // 스캔 진행 알림
+  const rowsWrap = h('div',{});
+  clear(view).append(banner, rowsWrap);
+
+  async function draw(){
+    const data = await api('/api/home');
+    const rows = homeSectionsInOrder()
+      .map(s=>hrow(s.label, data[s.key], s.kind==='book'?bookCard:seriesCard, s.more))
+      .filter(Boolean);
+    clear(rowsWrap);
+    if(!rows.length){
+      rowsWrap.append(h('div',{class:'center-pad'},
+        h('div',{class:'brand',style:{marginBottom:'14px'}}, h('span',{html:DUCK})),
+        h('p',{},'아직 표시할 책이 없습니다.'),
+        state.user.role==='admin'
+          ? h('button',{class:'btn primary',style:{marginTop:'10px'},onclick:()=>location.hash='#/admin'},'라이브러리 추가하기')
+          : h('p',{class:'muted'},'관리자가 라이브러리를 추가하면 여기에 표시됩니다.')
+      ));
+      return;
+    }
+    rows.forEach(r=>rowsWrap.append(r));
+  }
+  await draw();
+
+  // ---- 스캔 중이면 실시간 반영 (새로고침 없이 새 책이 나타남) ----
+  let lastKey = null, wasRunning = false;
+  if(homeScanTimer){ clearInterval(homeScanTimer); homeScanTimer=null; }
+  const tick = async ()=>{
+    if(!location.hash.startsWith('#/home')){ clearInterval(homeScanTimer); homeScanTimer=null; return; }
+    let s;
+    try{ s = await api('/api/libraries/scan-status'); }catch(e){ return; }
+    if(s.running){
+      wasRunning = true;
+      const pct = s.found? Math.round((s.processed/Math.max(s.found,1))*100):0;
+      clear(banner).append(h('div',{class:'scan-banner'},
+        h('div',{}, `${s.mode==='deep'?'심층 스캔':'스캔'} 중 · ${s.library_name||''} — 추가 ${s.added} · 처리 ${s.processed}/${s.found}`),
+        h('div',{class:'bar'}, h('i',{style:{width:pct+'%'}}))
+      ));
+      // 새 책이 들어올 때마다 목록 갱신
+      const key = `${s.added}|${s.updated}|${s.restored}`;
+      if(key !== lastKey){ lastKey = key; draw().catch(()=>{}); }
+    }else{
+      clear(banner);
+      if(wasRunning){ wasRunning=false; lastKey=null; draw().catch(()=>{}); }  // 완료 직후 최종 갱신
+    }
+  };
+  tick();
+  homeScanTimer = setInterval(tick, 3000);
+}
+
+/* ==========================================================================
+   라이브러리 탭 (라이브러리별 보기)
+   ========================================================================== */
+async function viewLibraries(view){
   clear(view);
-  if(!rows.length){
+  await loadLibraries();
+  const libs = state.libraries || [];
+  if(!libs.length){
     view.append(h('div',{class:'center-pad'},
-      h('div',{class:'brand',style:{marginBottom:'14px'}}, h('span',{html:DUCK})),
-      h('p',{},'아직 표시할 책이 없습니다.'),
+      h('p',{},'표시할 라이브러리가 없습니다.'),
       state.user.role==='admin'
         ? h('button',{class:'btn primary',style:{marginTop:'10px'},onclick:()=>location.hash='#/admin'},'라이브러리 추가하기')
-        : h('p',{class:'muted'},'관리자가 라이브러리를 추가하면 여기에 표시됩니다.')
-    ));
+        : h('p',{class:'muted'},'관리자에게 접근 권한을 요청하세요.')));
     return;
   }
-  rows.forEach(r=>view.append(r));
+  view.append(h('div',{class:'row-head',style:{marginBottom:'4px'}},
+    h('h2',{},'라이브러리'),
+    state.user.role==='admin' ? h('a',{class:'more-link',href:'#/admin'},'순서 변경 ›') : null));
+
+  const grid = h('div',{class:'lib-grid'});
+  libs.forEach(l=>{
+    grid.append(h('div',{class:'lib-card', onclick:()=>{ libState.library=l.id; libState.tag=null; location.hash='#/library'; }},
+      h('div',{class:'lib-card-name'}, l.name, l.restricted?h('span',{class:'badge-pill warn',style:{marginLeft:'6px'}},'제한'):null),
+      h('div',{class:'lib-card-sub'}, `시리즈 ${l.series_count} · 책 ${l.book_count}`)
+    ));
+  });
+  view.append(grid);
+}
+
+/* ==========================================================================
+   전체보기 목록 (홈 섹션 → 더보기)
+   ========================================================================== */
+const LIST_TYPES = {
+  'added-books':   {title:'최근 추가된 책',       ep:'/api/books',  kind:'book',   sort:'created', order:'desc'},
+  'updated-books': {title:'최근 업데이트된 책',   ep:'/api/books',  kind:'book',   sort:'updated', order:'desc'},
+  'read-books':    {title:'최근 읽은 책',         ep:'/api/books',  kind:'book',   sort:'read',    order:'desc'},
+  'reading-books': {title:'이어보기',             ep:'/api/books',  kind:'book',   sort:'read',    order:'desc', extra:{progress:'reading'}},
+  'added-series':  {title:'최근 추가된 시리즈',   ep:'/api/series', kind:'series', sort:'created', order:'desc'},
+  'updated-series':{title:'최근 업데이트된 시리즈',ep:'/api/series', kind:'series', sort:'updated', order:'desc'},
+  'read-series':   {title:'최근 읽은 시리즈',     ep:'/api/series', kind:'series', sort:'read',    order:'desc'},
+};
+const BOOK_SORTS = [['read:desc','최근 읽은순'],['created:desc','최근 추가순'],['updated:desc','최근 업데이트순'],
+                    ['title:asc','제목 오름차순'],['title:desc','제목 내림차순'],['size:desc','용량 큰순']];
+const SERIES_SORTS = [['read:desc','최근 읽은순'],['created:desc','최근 추가순'],['updated:desc','최근 업데이트순'],
+                      ['name:asc','이름 오름차순'],['name:desc','이름 내림차순'],['books:desc','권수 많은순']];
+
+async function viewList(view){
+  const m = location.hash.match(/[?&]type=([^&]*)/);
+  const type = m ? decodeURIComponent(m[1]) : 'added-books';
+  const cfg = LIST_TYPES[type] || LIST_TYPES['added-books'];
+  let sort = cfg.sort, order = cfg.order, library = null, page = 1;
+  let items = [], total = 0;
+
+  clear(view);
+  const sortOpts = cfg.kind==='book' ? BOOK_SORTS : SERIES_SORTS;
+  const sortSel = h('select',{class:'input',style:{width:'auto'},onchange:e=>{
+    const [s,o]=e.target.value.split(':'); sort=s; order=o; page=1; load(true);
+  }}, ...sortOpts.map(([v,l])=>h('option',{value:v, selected:(sort+':'+order)===v}, l)));
+  const libSel = h('select',{class:'input',style:{width:'auto',minWidth:'110px'},onchange:e=>{
+    library = e.target.value?+e.target.value:null; page=1; load(true);
+  }}, h('option',{value:''},'모든 라이브러리'),
+     ...(state.libraries||[]).map(l=>h('option',{value:l.id}, l.name+(l.restricted?' 🔒':''))));
+
+  const head = h('div',{style:{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'}},
+    h('button',{class:'icon-btn',html:IC.back,onclick:()=>location.hash='#/home'}),
+    h('h2',{style:{margin:0,fontSize:'19px'}}, cfg.title));
+  const countLbl = h('div',{class:'muted',style:{fontSize:'13px',margin:'0 0 8px'}},'');
+  const gridWrap = h('div',{});
+  const moreWrap = h('div',{style:{textAlign:'center',margin:'18px 0'}});
+  view.append(head, h('div',{class:'filterbar'}, sortSel, libSel), countLbl, gridWrap, moreWrap);
+
+  async function load(reset){
+    if(reset){ items=[]; clear(gridWrap).append(h('div',{class:'spinner'})); }
+    const p = new URLSearchParams();
+    p.set('sort',sort); p.set('order',order); p.set('page',page); p.set('size','60');
+    if(library) p.set('library', library);
+    Object.entries(cfg.extra||{}).forEach(([k,v])=>p.set(k,v));
+    let data;
+    try{ data = await api(cfg.ep+'?'+p.toString()); }
+    catch(e){ clear(gridWrap).append(h('div',{class:'center-pad'}, e.message)); return; }
+    total = data.total;
+    items = items.concat(data.items);
+    clear(gridWrap);
+    if(!items.length){ gridWrap.append(h('div',{class:'center-pad'},'표시할 항목이 없습니다.')); clear(moreWrap); countLbl.textContent=''; return; }
+    const grid = h('div',{class:'grid'});
+    items.forEach(it=> grid.append(cfg.kind==='series'?seriesCard(it):bookCard(it)));
+    gridWrap.append(grid);
+    countLbl.textContent = `${items.length} / ${total}개`;
+    clear(moreWrap);
+    if(items.length < total){
+      moreWrap.append(h('button',{class:'btn',onclick:async(e)=>{
+        e.target.disabled=true; e.target.textContent='불러오는 중…'; page+=1; await load(false);
+      }},'더 보기'));
+    }
+  }
+  load(true);
 }
 
 /* ==========================================================================
@@ -613,15 +771,63 @@ async function viewSettings(view){
     h('h2',{style:{margin:'2px 0 16px'}},'독서 설정'),
     card('만화 뷰어', h('div',{},
       settingRow('기본 보기 방식', comicMode),
-      settingRow('기본 맞춤', segPick(['width','height'],['너비 맞춤','높이 맞춤'],prefs.comicFit,v=>{prefs.comicFit=v;savePrefs();}))
+      settingRow('기본 맞춤', segPick(['width','height','contain','original'],
+        ['너비','높이','화면맞춤','원본'],prefs.comicFit,v=>{prefs.comicFit=v;savePrefs();}))
     )),
     card('전자책 / 텍스트 뷰어', h('div',{},
       settingRow('글꼴', fontFam),
       settingRow('테마', themePick),
       settingRow('EPUB 보기', segPick(['paginated','scrolled'],['쪽넘김','스크롤'],prefs.epubFlow,v=>{prefs.epubFlow=v;savePrefs();}))
     )),
+    card('홈 화면 구성', homeOrderEditor()),
     h('p',{class:'muted',style:{fontSize:'12.5px',marginTop:'8px'}},'글자 크기·줄 간격은 각 뷰어의 Aa 버튼에서 실시간으로 조절할 수 있습니다.')
   );
+}
+
+/* 홈 섹션 순서 변경 + 표시/숨김 */
+function homeOrderEditor(){
+  const wrap = h('div',{});
+  const listWrap = h('div',{});
+  const hint = h('p',{class:'muted',style:{fontSize:'12.5px',margin:'0 0 10px'}},
+    '홈에 표시할 항목과 순서를 정합니다. ▲▼로 순서를 바꾸고 체크로 표시 여부를 정하세요.');
+
+  function persist(){ savePrefs(); render(); }
+  function currentOrder(){
+    const byId = Object.fromEntries(HOME_SECTIONS.map(s=>[s.id,s]));
+    const order = (prefs.homeOrder||[]).filter(id=>byId[id]);
+    HOME_SECTIONS.forEach(s=>{ if(!order.includes(s.id)) order.push(s.id); });
+    prefs.homeOrder = order;
+    return order;
+  }
+  function render(){
+    const order = currentOrder();
+    const hidden = new Set(prefs.homeHidden||[]);
+    clear(listWrap);
+    order.forEach((id, idx)=>{
+      const sec = HOME_SECTIONS.find(s=>s.id===id);
+      const chk = h('input',{type:'checkbox', ...(hidden.has(id)?{}:{checked:'checked'}), onchange:()=>{
+        const hs = new Set(prefs.homeHidden||[]);
+        if(chk.checked) hs.delete(id); else hs.add(id);
+        prefs.homeHidden = [...hs]; persist();
+      }});
+      listWrap.append(h('div',{class:'order-row'},
+        chk,
+        h('span',{style:{flex:'1',minWidth:0, opacity: hidden.has(id)?'0.45':'1'}}, sec.label),
+        h('button',{class:'btn sm', disabled: idx===0?'disabled':null, onclick:()=>{
+          const o=currentOrder(); [o[idx-1],o[idx]]=[o[idx],o[idx-1]]; prefs.homeOrder=o; persist();
+        }},'▲'),
+        h('button',{class:'btn sm', disabled: idx===order.length-1?'disabled':null, onclick:()=>{
+          const o=currentOrder(); [o[idx+1],o[idx]]=[o[idx],o[idx+1]]; prefs.homeOrder=o; persist();
+        }},'▼')
+      ));
+    });
+  }
+  render();
+  wrap.append(hint, listWrap,
+    h('button',{class:'btn sm',style:{marginTop:'10px'},onclick:()=>{
+      prefs.homeOrder = HOME_SECTIONS.map(s=>s.id); prefs.homeHidden=[]; persist(); toast('기본값으로 되돌렸습니다.');
+    }},'기본값으로'));
+  return wrap;
 }
 function settingRow(label, control){
   return h('div',{class:'rs-row'}, h('span',{},label), h('div',{class:'rs-controls'}, control));
@@ -699,8 +905,21 @@ async function adminLibraries(body){
   adminScanTimer = setInterval(refreshStatus, 2000);
 
   const listWrap = h('div',{});
-  libs.forEach(l=>{
+  async function move(idx, delta){
+    const ids = libs.map(x=>x.id);
+    const j = idx+delta;
+    if(j<0||j>=ids.length) return;
+    [ids[idx], ids[j]] = [ids[j], ids[idx]];
+    try{ await api('/api/libraries/order',{method:'PUT',body:{ids}}); await loadLibraries(); adminLibraries(body); }
+    catch(e){ toast(e.message); }
+  }
+  libs.forEach((l, idx)=>{
     listWrap.append(h('div',{class:'list-card'},
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'2px'}},
+        h('button',{class:'btn sm', disabled: idx===0?'disabled':null, title:'위로',
+          onclick:()=>move(idx,-1)},'▲'),
+        h('button',{class:'btn sm', disabled: idx===libs.length-1?'disabled':null, title:'아래로',
+          onclick:()=>move(idx,1)},'▼')),
       h('div',{class:'lc-main'},
         h('div',{class:'lc-title'}, l.name, ' ', l.restricted?h('span',{class:'badge-pill warn'},'제한'):h('span',{class:'badge-pill'},'공개')),
         h('div',{class:'lc-sub'}, l.path),
@@ -1194,9 +1413,12 @@ async function openComicReader(book){
   function rebuild(){
     if(io){io.disconnect();io=null;}
     clear(bodyWrap);
+    const zoom = Math.max(50, Math.min(300, prefs.comicZoom||100));
     if(mode==='webtoon'){
       bodyWrap.className='reader-body';
-      const strip = h('div',{class:'comic-webtoon'+(fit==='height'?' fit-height':'')});
+      const strip = h('div',{class:'comic-webtoon fit-'+fit});
+      strip.style.setProperty('--czoom', zoom+'%');
+      strip.style.setProperty('--czoomf', String(zoom/100));
       for(let i=0;i<pages;i++){
         strip.append(h('img',{loading:'lazy', dataset:{page:i}, src:`/api/books/${b.id}/pages/${i}`}));
       }
@@ -1208,7 +1430,9 @@ async function openComicReader(book){
       requestAnimationFrame(()=>scrollToPage(cur,false));
     }else{
       bodyWrap.className='reader-body';
-      const stage = h('div',{class:'comic-paged'+(fit==='width'?' fit-width':'')});
+      const stage = h('div',{class:'comic-paged fit-'+fit});
+      stage.style.setProperty('--czoom', zoom+'%');
+      stage.style.setProperty('--czoomf', String(zoom/100));
       const img = h('img',{});
       stage.append(img);
       const zones = h('div',{class:'tap-zones'},
@@ -1241,11 +1465,23 @@ async function openComicReader(book){
 function comicSettingsPanel(mode, fit, onChange){
   let m=mode, f=fit;
   const modeSeg = segPick(['webtoon','paged'],['웹툰(세로)','페이지'],m,v=>{m=v;onChange(m,f);});
-  const fitSeg = segPick(['width','height'],['너비','높이'],f,v=>{f=v;onChange(m,f);});
+  const fitSeg = segPick(['width','height','contain','original'],
+                         ['너비','높이','화면맞춤','원본'],f,v=>{f=v;onChange(m,f);});
+  const zoomLbl = h('span',{class:'muted',style:{fontSize:'12px',minWidth:'44px',textAlign:'right'}},
+                    (prefs.comicZoom||100)+'%');
+  const zoom = h('input',{type:'range',min:'50',max:'300',step:'5',value:String(prefs.comicZoom||100),
+    style:{flex:'1',accentColor:'var(--amber)'}, oninput:e=>{
+      prefs.comicZoom = +e.target.value; zoomLbl.textContent = prefs.comicZoom+'%';
+      savePrefs(); onChange(m,f);
+    }});
   const node = h('div',{class:'reader-settings'},
     h('div',{class:'rs-row'}, h('span',{},'보기 방식'), h('div',{class:'rs-controls'}, modeSeg)),
     h('div',{class:'rs-row'}, h('span',{},'이미지 맞춤'), h('div',{class:'rs-controls'}, fitSeg)),
-    h('button',{class:'btn',style:{width:'100%',justifyContent:'center'},onclick:()=>node.classList.remove('open')},'닫기')
+    h('div',{class:'rs-row'}, h('span',{},'확대/축소'),
+      h('div',{class:'rs-controls',style:{flex:'1',display:'flex',alignItems:'center',gap:'8px'}}, zoom, zoomLbl)),
+    h('div',{style:{display:'flex',gap:'8px'}},
+      h('button',{class:'btn sm',onclick:()=>{ prefs.comicZoom=100; zoom.value='100'; zoomLbl.textContent='100%'; savePrefs(); onChange(m,f); }},'100%'),
+      h('button',{class:'btn',style:{flex:'1',justifyContent:'center'},onclick:()=>node.classList.remove('open')},'닫기'))
   );
   return {node, toggle:()=>node.classList.toggle('open')};
 }
@@ -1259,15 +1495,16 @@ async function loadScript(src){
   });
 }
 const CDN = {
-  jszip:'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
-  epub:'https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js',
-  pdf:'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
-  pdfworker:'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
+  jszip:'/assets/vendor/jszip.min.js',
+  epub:'/assets/vendor/epub.min.js',
+  pdf:'/assets/vendor/pdf.min.js',
+  pdfworker:'/assets/vendor/pdf.worker.min.js',
 };
 async function openEpubReader(book){
   const b = await api('/api/books/'+book.id);
   const aaBtn = h('button',{class:'icon-btn',html:IC.aa});
-  const {reader} = readerShell(b.title, {themed:true, actions:[aaBtn]});
+  const imgBtn = h('button',{class:'icon-btn',html:IC.image,title:'삽화'});
+  const {reader} = readerShell(b.title, {themed:true, actions:[imgBtn, aaBtn]});
   const area = h('div',{id:'epub-area'});
   const bottom = h('div',{class:'reader-bottom'});
   const slider = h('input',{type:'range',min:0,max:100,value:0,style:{width:'100%',accentColor:'var(--amber)'}});
@@ -1282,17 +1519,34 @@ async function openEpubReader(book){
   let rendition=null, bookObj=null;
   try{
     await loadScript(CDN.jszip); await loadScript(CDN.epub);
-  }catch(e){ clear(area).append(h('div',{class:'center-pad'},'EPUB 뷰어 로딩 실패. 인터넷 연결을 확인하거나 자체 호스팅 설정을 확인하세요.')); return; }
-  clear(area);
-  bookObj = ePub(`/api/books/${b.id}/file`);
-  rendition = bookObj.renderTo(area, {
-    width:'100%', height:'100%', spread:'none',
-    flow: prefs.epubFlow==='scrolled'?'scrolled-doc':'paginated',
-    allowScriptedContent:true,
-  });
-  applyEpubTheme(rendition);
-  const startCfi = (b.progress && b.progress.position) || undefined;
-  await rendition.display(startCfi);
+  }catch(e){ clear(area).append(h('div',{class:'center-pad'},'EPUB 뷰어 로딩 실패. 페이지를 새로고침해 보세요.')); return; }
+
+  // 중요: /api/books/{id}/file 은 확장자가 없어 epub.js 가 '폴더'로 오인 → 화면이 비어버림.
+  // 파일을 직접 받아 ArrayBuffer(바이너리)로 넘겨야 정상 렌더링됨.
+  try{
+    const resp = await fetch(`/api/books/${b.id}/file`, {credentials:'same-origin'});
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const buf = await resp.arrayBuffer();
+    clear(area);
+    bookObj = ePub(buf);
+  }catch(e){
+    clear(area).append(h('div',{class:'center-pad'},'EPUB 파일을 불러오지 못했습니다: '+e.message));
+    return;
+  }
+
+  try{
+    rendition = bookObj.renderTo(area, {
+      width:'100%', height:'100%', spread:'none',
+      flow: prefs.epubFlow==='scrolled'?'scrolled-doc':'paginated',
+      allowScriptedContent:true,
+    });
+    applyEpubTheme(rendition);
+    const startCfi = (b.progress && b.progress.position) || undefined;
+    await rendition.display(startCfi);
+  }catch(e){
+    clear(area).append(h('div',{class:'center-pad'},'EPUB 렌더링 실패: '+e.message));
+    return;
+  }
 
   // 진행률
   bookObj.ready.then(()=>bookObj.locations.generate(1600)).then(()=>{
@@ -1317,6 +1571,61 @@ async function openEpubReader(book){
   });
   reader.append(panel.node);
   aaBtn.addEventListener('click', panel.toggle);
+
+  // 삽화 갤러리
+  imgBtn.addEventListener('click', ()=>openEpubImages(bookObj, rendition));
+}
+
+/* EPUB 삽화 목록 — 클릭하면 그 삽화가 있는 페이지로 이동 */
+let _epubImgCache = null;
+async function openEpubImages(bookObj, rendition){
+  const grid = h('div',{class:'img-grid'});
+  const inner = h('div',{},
+    h('h3',{style:{marginTop:0}},'삽화'),
+    h('p',{class:'muted',style:{fontSize:'12.5px',margin:'2px 0 12px'}},'이미지를 누르면 해당 페이지로 이동합니다.'),
+    grid);
+  openSheet(inner, ()=>{});
+  grid.append(h('div',{class:'spinner'}));
+
+  try{
+    if(!_epubImgCache || _epubImgCache.book !== bookObj){
+      const found = [];
+      const spine = bookObj.spine && bookObj.spine.spineItems ? bookObj.spine.spineItems : [];
+      for(const item of spine){
+        let doc=null;
+        try{ doc = await item.load(bookObj.load.bind(bookObj)); }catch(e){ continue; }
+        try{
+          const imgs = doc.querySelectorAll ? doc.querySelectorAll('img, image') : [];
+          for(const im of imgs){
+            const raw = im.getAttribute('src') || im.getAttribute('xlink:href') || im.getAttribute('href');
+            if(!raw) continue;
+            // 챕터 경로 기준 상대경로 → epub 내부 절대경로
+            let abs;
+            try{ abs = new URL(raw, 'http://x/'+item.href).pathname.replace(/^\//,''); }
+            catch(e){ abs = raw.replace(/^\.?\//,''); }
+            let url=null;
+            try{ url = await bookObj.archive.createUrl(abs, {base64:false}); }catch(e){ url=null; }
+            if(url) found.push({url, href:item.href});
+            if(found.length>=200) break;
+          }
+        }catch(e){}
+        try{ item.unload(); }catch(e){}
+        if(found.length>=200) break;
+      }
+      _epubImgCache = {book:bookObj, images:found};
+    }
+    const list = _epubImgCache.images;
+    clear(grid);
+    if(!list.length){ grid.append(h('div',{class:'center-pad'},'이 책에는 삽화가 없습니다.')); return; }
+    list.forEach(it=>{
+      grid.append(h('div',{class:'img-cell', onclick:()=>{
+        closeOverlay();
+        try{ rendition.display(it.href); }catch(e){ toast('이동할 수 없습니다.'); }
+      }}, h('img',{src:it.url, loading:'lazy', alt:''})));
+    });
+  }catch(e){
+    clear(grid).append(h('div',{class:'center-pad'},'삽화를 불러오지 못했습니다: '+e.message));
+  }
 }
 function applyEpubTheme(rendition){
   const themes = {
@@ -1469,7 +1778,33 @@ function textSettingsPanel(apply, onFlowChange, isTxt){
    ========================================================================== */
 boot();
 
-/* PWA 서비스워커 (선택) */
+/* PWA 서비스워커 — 새 버전 배포 시 강력 새로고침 없이 자동 반영 */
 if('serviceWorker' in navigator){
-  window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+  let swReloaded = false;
+  // 새 서비스워커가 제어를 넘겨받으면 한 번만 자동 새로고침
+  navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+    if(swReloaded) return; swReloaded = true;
+    location.reload();
+  });
+  window.addEventListener('load', ()=>{
+    // updateViaCache:'none' → sw.js 자체가 브라우저 캐시에 묶이지 않음
+    navigator.serviceWorker.register('/sw.js', {updateViaCache:'none'}).then(reg=>{
+      reg.update().catch(()=>{});
+      // 주기적 + 앱으로 돌아올 때 새 버전 확인
+      setInterval(()=>reg.update().catch(()=>{}), 30*60*1000);
+      document.addEventListener('visibilitychange', ()=>{
+        if(document.visibilityState==='visible') reg.update().catch(()=>{});
+      });
+      reg.addEventListener('updatefound', ()=>{
+        const nw = reg.installing;
+        if(!nw) return;
+        nw.addEventListener('statechange', ()=>{
+          // 새 버전 설치 완료 + 기존 SW 가 제어 중 → 즉시 교체
+          if(nw.state==='installed' && navigator.serviceWorker.controller){
+            try{ nw.postMessage({type:'SKIP_WAITING'}); }catch(e){}
+          }
+        });
+      });
+    }).catch(()=>{});
+  });
 }

@@ -82,3 +82,7 @@ class MetadataApplyIn(BaseModel):
     external_id: Any
     fields: List[str] = ["description", "author", "tags", "publisher", "language"]
     replace_cover: bool = False
+
+
+class LibraryOrderIn(BaseModel):
+    ids: List[int]

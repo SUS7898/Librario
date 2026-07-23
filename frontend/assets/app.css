@@ -222,13 +222,24 @@ label.field > span{display:block;font-size:13px;color:var(--muted);margin-bottom
 .pageslider input[type=range]{flex:1;accent-color:var(--amber)}
 .pageslider .pnum{font-size:12px;color:var(--muted);min-width:64px;text-align:center}
 
-/* 만화 뷰어 */
-.comic-webtoon{max-width:900px;margin:0 auto}
-.comic-webtoon img{width:100%;display:block;background:var(--surface-2);min-height:120px}
-.comic-webtoon.fit-height img{width:auto;max-width:100%;max-height:100dvh;margin:0 auto}
-.comic-paged{height:100%;display:flex;align-items:center;justify-content:center}
-.comic-paged img{max-width:100%;max-height:100dvh;object-fit:contain}
-.comic-paged.fit-width img{width:100%;max-height:none;object-fit:contain}
+/* 만화 뷰어 — 상/하단 바에 가려 잘리지 않도록 여백 확보(HUD 숨기면 전체 사용) */
+.comic-webtoon{margin:0 auto;width:max-content;min-width:100%}
+.comic-webtoon img{display:block;background:var(--surface-2);min-height:120px;margin:0 auto}
+.comic-webtoon.fit-width img{width:var(--czoom,100%);max-width:none;height:auto}
+.comic-webtoon.fit-height img{height:calc(var(--czoomf,1) * 100dvh);width:auto;max-width:none}
+.comic-webtoon.fit-contain img{max-width:var(--czoom,100%);max-height:calc(var(--czoomf,1) * 100dvh);
+  width:auto;height:auto}
+.comic-webtoon.fit-original img{width:auto;height:auto;max-width:none;zoom:var(--czoomf,1)}
+
+.comic-paged{height:100%;display:flex;align-items:center;justify-content:center;
+  box-sizing:border-box;padding:var(--top-h) 0 96px;transition:padding .25s}
+.reader.hud-hidden .comic-paged{padding:0}
+.comic-paged img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.comic-paged.fit-width img{width:var(--czoom,100%);max-width:none;max-height:none;height:auto}
+.comic-paged.fit-height img{height:calc(var(--czoomf,1) * 100%);width:auto;max-width:none;max-height:none}
+.comic-paged.fit-contain img{max-width:var(--czoom,100%);max-height:calc(var(--czoomf,1) * 100%);
+  width:auto;height:auto}
+.comic-paged.fit-original img{width:auto;height:auto;max-width:none;max-height:none;zoom:var(--czoomf,1)}
 .tap-zones{position:absolute;inset:0;z-index:2;display:flex}
 .tap-zones .z{flex:1}
 .tap-zones .z.mid{flex:0 0 34%}
@@ -256,3 +267,43 @@ select.mini{background:var(--surface);border:1px solid var(--line-soft);color:va
   border-radius:9px;padding:8px 10px;font-size:13px}
 
 .empty-ill{opacity:.5;margin:0 auto 14px;width:56px;height:56px}
+
+
+/* ==========================================================================
+   1.2 추가 UI (홈 섹션/전체보기/라이브러리 탭/삽화/순서변경)
+   ========================================================================== */
+button:disabled{opacity:.38;pointer-events:none}
+
+/* 홈 섹션 '전체보기' 링크 */
+.row-head .more-link{font-size:12.5px;color:var(--amber);font-weight:600;white-space:nowrap;
+  padding:2px 4px;border-radius:6px}
+.row-head .more-link:hover{background:var(--amber-soft)}
+
+/* 홈 상단 스캔 진행 배너 */
+.scan-banner{background:var(--surface);border:1px solid var(--line-soft);border-radius:12px;
+  padding:11px 14px;margin:0 2px 16px;font-size:13px;color:var(--muted)}
+.scan-banner .bar{margin-top:9px}
+
+/* 라이브러리 탭 카드 */
+.lib-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+.lib-card{background:var(--surface);border:1px solid var(--line-soft);border-radius:var(--radius);
+  padding:16px 15px;cursor:pointer;transition:border-color .15s,transform .1s}
+.lib-card:hover{border-color:var(--amber);transform:translateY(-1px)}
+.lib-card:active{transform:translateY(0)}
+.lib-card-name{font-weight:650;font-size:15px;display:flex;align-items:center;flex-wrap:wrap;gap:2px}
+.lib-card-sub{font-size:12.5px;color:var(--muted);margin-top:6px}
+
+/* 순서 변경 행 (홈 섹션 설정) */
+.order-row{display:flex;align-items:center;gap:10px;padding:9px 2px;
+  border-bottom:1px solid var(--line-soft);font-size:14px}
+.order-row:last-child{border-bottom:none}
+.order-row input[type=checkbox]{width:17px;height:17px;accent-color:var(--amber);flex:0 0 auto}
+.order-row .btn.sm{padding:3px 10px;min-width:34px;justify-content:center}
+
+/* EPUB 삽화 갤러리 */
+.img-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+  max-height:62dvh;overflow-y:auto}
+.img-cell{background:var(--surface-2);border-radius:9px;overflow:hidden;cursor:pointer;
+  aspect-ratio:3/4;border:1px solid var(--line-soft);transition:border-color .15s}
+.img-cell:hover{border-color:var(--amber)}
+.img-cell img{width:100%;height:100%;object-fit:cover;display:block}
