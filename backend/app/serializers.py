@@ -3,7 +3,8 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from .models import Book, Series, ReadProgress, Rating, Tag, BookTag, User
+from .models import (Book, Series, ReadProgress, Rating, Tag, BookTag, User,
+                     SeriesRating, Favorite)
 
 
 def _iso(v):
@@ -66,6 +67,8 @@ def book_to_dict(db: Session, book: Book, user: User, with_tags: bool = True):
         "file_size": book.file_size,
         "page_count": book.page_count,
         "has_thumb": book.has_thumb,
+        "favorite": bool(db.scalar(select(Favorite.id).where(
+            Favorite.user_id == user.id, Favorite.book_id == book.id))),
         "status": book.status,
         "trashed_at": _iso(book.trashed_at),
         "created_at": _iso(book.created_at),
@@ -119,6 +122,10 @@ def series_to_dict(db: Session, series: Series, user: User, with_tags: bool = Tr
         "has_thumb": True,
         "created_at": _iso(series.created_at),
         "updated_at": _iso(series.updated_at),
+        "my_rating": db.scalar(select(SeriesRating.value).where(
+            SeriesRating.user_id == user.id, SeriesRating.series_id == series.id)) or 0,
+        "favorite": bool(db.scalar(select(Favorite.id).where(
+            Favorite.user_id == user.id, Favorite.series_id == series.id))),
     }
     if with_tags:
         d["tags"] = series_tags(db, series.id)

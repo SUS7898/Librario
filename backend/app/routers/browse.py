@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .. import security, schemas, serializers, thumbnails
 from ..database import get_db
 from ..models import (
+    SeriesRating, Favorite,
     User, Library, Series, Book, Tag, BookTag, ReadProgress, Rating, utcnow,
 )
 
@@ -32,12 +33,46 @@ def _require_series(db, user, series_id) -> Series:
 
 
 # ============================ 홈 ============================
+# 홈 응답 캐시 (사용자별). 스캔으로 내용이 바뀌면 버전이 올라가 자동 무효화된다.
+_HOME_CACHE = {}
+_HOME_TTL = 20.0
+
+
+def _home_cache_get(user_id: int):
+    import time as _t
+    from .. import scanner as _sc
+    ent = _HOME_CACHE.get(user_id)
+    if not ent:
+        return None
+    ts, ver, data = ent
+    cur_ver = int(_sc.scan_status.get("added", 0)) + int(_sc.scan_status.get("updated", 0))
+    if ver != cur_ver or (_t.time() - ts) > _HOME_TTL:
+        return None
+    return data
+
+
+def _home_invalidate(user_id: int):
+    _HOME_CACHE.pop(user_id, None)
+
+
+def _home_cache_put(user_id: int, data):
+    import time as _t
+    from .. import scanner as _sc
+    ver = int(_sc.scan_status.get("added", 0)) + int(_sc.scan_status.get("updated", 0))
+    _HOME_CACHE[user_id] = (_t.time(), ver, data)
+    if len(_HOME_CACHE) > 200:
+        _HOME_CACHE.clear()
+
+
 @router.get("/home")
 def home(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
-         limit: int = Query(20, le=50)):
+         limit: int = Query(12, le=50)):
+    cached = _home_cache_get(user.id)
+    if cached is not None:
+        return cached
     ids = _acc_ids(db, user)
     if not ids:
-        return {"continue_reading": [], "recently_read_books": [], "recently_read_series": [],
+        return {"favorite_series": [], "continue_reading": [], "recently_read_books": [], "recently_read_series": [],
                 "recently_added_books": [], "recently_added_series": [],
                 "recently_updated_series": [], "recently_updated_books": [],
                 "on_deck": []}
@@ -89,13 +124,22 @@ def home(user: User = Depends(security.get_current_user), db: Session = Depends(
             if len(read_series) >= limit:
                 break
 
+    # 즐겨찾기한 시리즈 (최근 추가한 순)
+    fav_series = db.scalars(
+        select(Series).join(Favorite, Favorite.series_id == Series.id)
+        .where(Favorite.user_id == user.id, Series.library_id.in_(ids),
+               Series.book_count > 0)
+        .order_by(Favorite.created_at.desc()).limit(limit)
+    ).all()
+
     # 최근 추가된 시리즈
     added_series = db.scalars(
         select(Series).where(Series.library_id.in_(ids), Series.book_count > 0)
         .order_by(Series.created_at.desc(), Series.id.desc()).limit(limit)
     ).all()
 
-    return {
+    result = {
+        "favorite_series": [serializers.series_to_dict(db, x, user, with_tags=False) for x in fav_series],
         "continue_reading": [serializers.book_to_dict(db, b, user, with_tags=False) for b in cont_rows],
         "recently_read_books": [serializers.book_to_dict(db, b, user, with_tags=False) for b in read_books],
         "recently_read_series": [serializers.series_to_dict(db, s, user, with_tags=False) for s in read_series],
@@ -104,12 +148,15 @@ def home(user: User = Depends(security.get_current_user), db: Session = Depends(
         "recently_updated_series": [serializers.series_to_dict(db, s, user, with_tags=False) for s in upd_series],
         "recently_updated_books": [serializers.book_to_dict(db, b, user, with_tags=False) for b in upd_books],
     }
+    _home_cache_put(user.id, result)
+    return result
 
 
 # ============================ 시리즈 ============================
 @router.get("/series")
 def list_series(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
                 library: int = Query(None), search: str = Query(None), tag: str = Query(None),
+                favorite: bool = Query(False), min_rating: int = Query(0, ge=0, le=5),
                 sort: str = Query("name"), order: str = Query("asc"),
                 page: int = Query(1, ge=1), size: int = Query(40, ge=1, le=200)):
     ids = _acc_ids(db, user)
@@ -131,7 +178,28 @@ def list_series(user: User = Depends(security.get_current_user), db: Session = D
             )
         )
 
-    if sort == "read":
+    # 즐겨찾기 / 별점 필터 (내 기준)
+    fav_sub = (select(Favorite.id).where(
+        Favorite.user_id == user.id, Favorite.series_id == Series.id)
+        .correlate(Series).exists())
+    my_rating_sub = (select(SeriesRating.value).where(
+        SeriesRating.user_id == user.id, SeriesRating.series_id == Series.id)
+        .correlate(Series).scalar_subquery())
+    if favorite:
+        stmt = stmt.where(fav_sub)
+    if min_rating:
+        stmt = stmt.where(my_rating_sub >= int(min_rating))
+
+    if sort == "favorite":
+        # 즐겨찾기를 맨 위로, 그다음 이름순
+        stmt = stmt.order_by(fav_sub.desc(), Series.sort_name.asc())
+        total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        rows = db.scalars(stmt.offset((page - 1) * size).limit(size)).all()
+        return {"items": [serializers.series_to_dict(db, x, user) for x in rows],
+                "total": total, "page": page, "size": size}
+    if sort == "rating":
+        sort_col = func.coalesce(my_rating_sub, 0)
+    elif sort == "read":
         # 시리즈 내 책들의 마지막 읽은 시각 기준. 읽은 기록이 있는 시리즈만.
         last_read = (
             select(func.max(ReadProgress.updated_at))
@@ -178,6 +246,7 @@ def series_detail(series_id: int, user: User = Depends(security.get_current_user
 def list_books(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
                library: int = Query(None), series: int = Query(None), search: str = Query(None),
                tag: str = Query(None), fmt: str = Query(None),
+               favorite: bool = Query(False), min_rating: int = Query(0, ge=0, le=5),
                progress: str = Query(None),  # reading | completed
                sort: str = Query("title"), order: str = Query("asc"),
                page: int = Query(1, ge=1), size: int = Query(40, ge=1, le=200)):
@@ -203,6 +272,18 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
             )
         )
 
+    # 즐겨찾기 / 내 별점 필터
+    bfav_sub = (select(Favorite.id).where(
+        Favorite.user_id == user.id, Favorite.book_id == Book.id)
+        .correlate(Book).exists())
+    brate_sub = (select(Rating.value).where(
+        Rating.user_id == user.id, Rating.book_id == Book.id)
+        .correlate(Book).scalar_subquery())
+    if favorite:
+        stmt = stmt.where(bfav_sub)
+    if min_rating:
+        stmt = stmt.where(brate_sub >= int(min_rating))
+
     # 읽기 기록 기반(최근 읽은/이어보기/완독)은 ReadProgress 를 조인
     need_progress = (sort == "read") or (progress in ("reading", "completed"))
     if need_progress:
@@ -213,7 +294,15 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
         elif progress == "completed":
             stmt = stmt.where(ReadProgress.completed == True)   # noqa: E712
 
-    if sort == "read":
+    if sort == "favorite":
+        stmt = stmt.order_by(bfav_sub.desc(), Book.sort_title.asc())
+        total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        rows = db.scalars(stmt.offset((page - 1) * size).limit(size)).all()
+        return {"items": [serializers.book_to_dict(db, b, user, with_tags=True) for b in rows],
+                "total": total, "page": page, "size": size}
+    if sort == "rating":
+        sort_col = func.coalesce(brate_sub, 0)
+    elif sort == "read":
         sort_col = ReadProgress.updated_at
     else:
         sort_col = {
@@ -340,6 +429,7 @@ def add_series_tag(series_id: int, body: schemas.TagAddIn,
 @router.put("/books/{book_id}/rating")
 def set_rating(book_id: int, body: schemas.RatingIn,
                user: User = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    _home_invalidate(user.id)
     book = _require_book(db, user, book_id)
     r = db.scalar(select(Rating).where(Rating.user_id == user.id, Rating.book_id == book.id))
     if body.value == 0:
@@ -360,6 +450,7 @@ def set_rating(book_id: int, body: schemas.RatingIn,
 @router.put("/books/{book_id}/progress")
 def set_progress(book_id: int, body: schemas.ProgressIn,
                  user: User = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    _home_invalidate(user.id)
     book = _require_book(db, user, book_id)
     p = db.scalar(select(ReadProgress).where(
         ReadProgress.user_id == user.id, ReadProgress.book_id == book.id))
@@ -460,6 +551,33 @@ def book_epub_images(book_id: int, user: User = Depends(security.get_current_use
     return {"indexed": bool(meta), "images": imgs}
 
 
+@router.get("/books/{book_id}/epub-thumb")
+def book_epub_thumb(book_id: int, href: str = Query(...),
+                    user: User = Depends(security.get_current_user),
+                    db: Session = Depends(get_db)):
+    """삽화 썸네일. 스캔 때 미리 만들어 둔 작은 이미지를 우선 사용하고,
+    없으면 그 자리에서 만들어 저장한다(다음부터는 즉시)."""
+    from ..formats import epub_asset_bytes
+    book = _require_book(db, user, book_id)
+    p = thumbnails.epub_img_thumb_path(book.id, href)
+    if not p.exists():
+        got = epub_asset_bytes(book.path, href)
+        if not got:
+            raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+        small = thumbnails._resize_small(got[0])
+        if small:
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with open(p, "wb") as f:
+                    f.write(small)
+            except OSError:
+                return Response(content=got[0], media_type=got[1])
+        else:
+            return Response(content=got[0], media_type=got[1])
+    return FileResponse(p, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=604800"})
+
+
 @router.get("/books/{book_id}/epub-asset")
 def book_epub_asset(book_id: int, href: str = Query(...),
                     user: User = Depends(security.get_current_user),
@@ -475,3 +593,70 @@ def book_epub_asset(book_id: int, href: str = Query(...),
     data, ctype = got
     return Response(content=data, media_type=ctype,
                     headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ============================ 즐겨찾기 / 시리즈 별점 ============================
+
+
+def _require_series(db, user, series_id):
+    s = db.get(Series, series_id)
+    if not s or s.library_id not in set(security.accessible_library_ids(db, user)):
+        raise HTTPException(status_code=404, detail="시리즈를 찾을 수 없습니다.")
+    return s
+
+
+@router.put("/series/{series_id}/rating")
+def set_series_rating(series_id: int, body: schemas.RatingIn,
+                      user: User = Depends(security.get_current_user),
+                      db: Session = Depends(get_db)):
+    _home_invalidate(user.id)
+    s = _require_series(db, user, series_id)
+    r = db.scalar(select(SeriesRating).where(
+        SeriesRating.user_id == user.id, SeriesRating.series_id == s.id))
+    if body.value and body.value > 0:
+        if not r:
+            r = SeriesRating(user_id=user.id, series_id=s.id)
+            db.add(r)
+        r.value = max(1, min(5, int(body.value)))
+        r.updated_at = utcnow()
+    elif r:
+        db.delete(r)
+    db.commit()
+    val = int(body.value or 0)
+    return {"ok": True, "value": max(0, min(5, val))}
+
+
+@router.post("/favorites/{kind}/{item_id}")
+def add_favorite(kind: str, item_id: int,
+                 user: User = Depends(security.get_current_user),
+                 db: Session = Depends(get_db)):
+    _home_invalidate(user.id)
+    if kind not in ("series", "book"):
+        raise HTTPException(status_code=400, detail="잘못된 종류입니다.")
+    if kind == "series":
+        _require_series(db, user, item_id)
+        exist = db.scalar(select(Favorite).where(
+            Favorite.user_id == user.id, Favorite.series_id == item_id))
+        if not exist:
+            db.add(Favorite(user_id=user.id, series_id=item_id))
+    else:
+        _require_book(db, user, item_id)
+        exist = db.scalar(select(Favorite).where(
+            Favorite.user_id == user.id, Favorite.book_id == item_id))
+        if not exist:
+            db.add(Favorite(user_id=user.id, book_id=item_id))
+    db.commit()
+    return {"ok": True, "favorite": True}
+
+
+@router.delete("/favorites/{kind}/{item_id}")
+def remove_favorite(kind: str, item_id: int,
+                    user: User = Depends(security.get_current_user),
+                    db: Session = Depends(get_db)):
+    _home_invalidate(user.id)
+    col = Favorite.series_id if kind == "series" else Favorite.book_id
+    f = db.scalar(select(Favorite).where(Favorite.user_id == user.id, col == item_id))
+    if f:
+        db.delete(f)
+        db.commit()
+    return {"ok": True, "favorite": False}

@@ -160,7 +160,9 @@ label.field > span{display:block;font-size:13px;color:var(--muted);margin-bottom
 .book-row .rp{font-size:11.5px;color:var(--amber);font-weight:600}
 
 /* ---------- 별점 ---------- */
-.stars{display:inline-flex;gap:3px}
+.stars{display:inline-flex;gap:3px;align-items:center}
+.stars .star{font-size:21px;line-height:1;cursor:pointer;color:#4a4f63;user-select:none}
+.stars .star.on{color:var(--amber)}
 .stars svg{width:22px;height:22px;cursor:pointer;color:#4a4f63}
 .stars svg.on{color:var(--amber)}
 .stars.lg svg{width:30px;height:30px}
@@ -322,3 +324,6 @@ button:disabled{opacity:.38;pointer-events:none}
 .toc-row.cur{background:var(--amber-soft);box-shadow:inset 3px 0 0 var(--amber)}
 .toc-num{flex:0 0 auto;min-width:34px;font-size:11.5px;color:var(--muted-2);font-variant-numeric:tabular-nums}
 .toc-title{flex:1;font-size:14px;line-height:1.45;word-break:break-word}
+
+.fav-mark{color:var(--amber)}
+.card-rate{color:var(--amber);font-weight:600}

@@ -37,11 +37,13 @@ class LibraryCreateIn(BaseModel):
     name: str
     path: str
     restricted: bool = False
+    private: Optional[bool] = None
 
 
 class LibraryUpdateIn(BaseModel):
     name: Optional[str] = None
     restricted: Optional[bool] = None
+    private: Optional[bool] = None
 
 
 class TagsSetIn(BaseModel):

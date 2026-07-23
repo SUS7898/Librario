@@ -47,6 +47,19 @@ def _deep_due(cfg: dict, last) -> bool:
     return (now_local.hour, now_local.minute) >= (h, m)
 
 
+def _optimize_due(cfg, last_iso) -> bool:
+    if not cfg.get("optimize_enabled", True):
+        return False
+    days = int(cfg.get("optimize_every_days", 7) or 7)
+    if not last_iso:
+        return True
+    try:
+        last = dt.datetime.fromisoformat(last_iso)
+    except (TypeError, ValueError):
+        return True
+    return (dt.datetime.utcnow() - last).total_seconds() >= days * 86400
+
+
 def _tick():
     db = SessionLocal()
     try:
@@ -67,6 +80,22 @@ def _tick():
     if _quick_due(cfg, last_quick):
         print("[scheduler] 빠른 예약 스캔 시작", flush=True)
         scanner.scan_all(deep=False)
+        return
+
+    # 스캔이 없을 때만 DB 최적화 (VACUUM 은 잠금을 잡으므로)
+    db = SessionLocal()
+    try:
+        last_opt = settings_store.get_json(db, "last_db_optimize", None)
+        if _optimize_due(cfg, last_opt):
+            print("[scheduler] DB 최적화 시작", flush=True)
+            from .database import optimize_db
+            r = optimize_db(full=True)
+            settings_store.set_json(db, "last_db_optimize", dt.datetime.utcnow().isoformat())
+            print(f"[scheduler] DB 최적화 완료 {r.get('steps')} 확보 {r.get('freed')}바이트", flush=True)
+    except Exception as e:
+        print(f"[scheduler] DB 최적화 실패: {e}", flush=True)
+    finally:
+        db.close()
 
 
 def _loop():

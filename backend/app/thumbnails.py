@@ -175,3 +175,67 @@ def delete_book_thumbnail(book_id: int):
                 os.remove(p)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# EPUB 삽화 썸네일 — 스캔 때 미리 만들어 두면 삽화 목록이 즉시 뜬다.
+# 원본(수 MB)을 그대로 내려받지 않아 모바일에서 특히 유리하다.
+# ---------------------------------------------------------------------------
+import hashlib
+
+
+def epub_img_thumb_path(book_id: int, href: str) -> Path:
+    key = hashlib.sha1(href.encode("utf-8", "replace")).hexdigest()[:16]
+    return config.THUMB_DIR / "epub" / str(book_id) / f"{key}.jpg"
+
+
+def _resize_small(raw: bytes, box=(220, 300)) -> Optional[bytes]:
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        im.thumbnail(box, Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=78, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def build_epub_image_thumbs(book_id: int, path: str, images, limit: int = 400) -> int:
+    """삽화 썸네일을 미리 생성. 이미 있으면 건너뛴다. 생성 개수를 반환."""
+    from . import formats
+    made = 0
+    for it in (images or [])[:limit]:
+        href = it.get("href") if isinstance(it, dict) else None
+        if not href:
+            continue
+        dst = epub_img_thumb_path(book_id, href)
+        if dst.exists():
+            continue
+        got = formats.epub_asset_bytes(path, href)
+        if not got:
+            continue
+        small = _resize_small(got[0])
+        if not small:
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with open(dst, "wb") as f:
+                f.write(small)
+            made += 1
+        except OSError:
+            continue
+    return made
+
+
+def delete_epub_image_thumbs(book_id: int):
+    import shutil as _sh
+    d = config.THUMB_DIR / "epub" / str(book_id)
+    if d.exists():
+        try:
+            _sh.rmtree(d)
+        except OSError:
+            pass

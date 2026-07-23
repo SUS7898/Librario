@@ -124,6 +124,8 @@ scan_status: Dict[str, object] = {
     "restored": 0,            # 휴지통 → 복구(이동/복원)
     "epub_indexed": 0,        # EPUB 목차/삽화 사전분석 건수
     "workers": 1,             # 병렬 처리 스레드 수
+    "file_errors": 0,         # 개별 파일 처리 실패 건수(전체 스캔은 계속됨)
+    "last_file_error": None,
     "removed": 0,             # (호환용, 영구삭제는 별도)
     "cancel_requested": False,  # 취소 요청됨(아직 진행 중)
     "cancelled": False,         # 취소로 종료됨
@@ -137,6 +139,7 @@ def _reset_status():
     scan_status.update({
         "found": 0, "processed": 0, "added": 0, "updated": 0,
         "trashed": 0, "restored": 0, "removed": 0, "epub_indexed": 0,
+        "file_errors": 0, "last_file_error": None,
         "cancel_requested": False, "cancelled": False,
         "error": None, "finished_at": None,
     })
@@ -496,74 +499,100 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
             all_auto = pre.get("tags") or []
             prior = existing.get(fpath)
             series = _get_or_create_series(db, lib, fpath, series_cache)
+            try:
 
-            book = None
-            was_trashed = False
-            if prior:
-                book = db.get(Book, prior[0])
-                was_trashed = (prior[3] == "trashed")
-            else:
-                # 새 경로 → 휴지통에서 같은 (크기, 파일명) 매칭이 있으면 '이동'으로 간주해 복구
-                mid = _pop_trashed_match(size, fn)
-                if mid is not None:
-                    book = db.get(Book, mid)
-                    was_trashed = True
-                    if book:
-                        book.path = fpath  # 새 위치로 갱신 (태그/평점/진행률 유지)
-
-            is_new = book is None
-            if is_new:
-                book = Book(
-                    series_id=series.id, library_id=lib.id, path=fpath, fmt=fmt,
-                    title=meta["title"], sort_title=str(meta["title"]).lower(),
-                    file_size=size, mtime=mtime, status="active",
-                    created_at=utcnow(), updated_at=utcnow(),
-                )
-                db.add(book)
-                db.flush()
-                scan_status["added"] = int(scan_status["added"]) + 1  # type: ignore
-            else:
-                book.series_id = series.id
-                book.library_id = lib.id
-                book.status = "active"
-                book.trashed_at = None
-                _write_book_fields(book, meta, size, mtime)
-                db.flush()
-                if was_trashed:
-                    scan_status["restored"] = int(scan_status["restored"]) + 1  # type: ignore
+                book = None
+                was_trashed = False
+                if prior:
+                    book = db.get(Book, prior[0])
+                    was_trashed = (prior[3] == "trashed")
                 else:
-                    scan_status["updated"] = int(scan_status["updated"]) + 1  # type: ignore
+                    # 새 경로 → 휴지통에서 같은 (크기, 파일명) 매칭이 있으면 '이동'으로 간주해 복구
+                    mid = _pop_trashed_match(size, fn)
+                    if mid is not None:
+                        book = db.get(Book, mid)
+                        was_trashed = True
+                        if book:
+                            book.path = fpath  # 새 위치로 갱신 (태그/평점/진행률 유지)
 
-            if is_new:
-                _write_book_fields(book, meta, size, mtime)
+                is_new = book is None
+                if is_new:
+                    # 같은 경로의 책이 '다른 라이브러리'에 남아 있을 수 있다
+                    # (라이브러리를 지웠다 다시 만들거나 경로가 겹치는 경우)
+                    # → 새로 넣지 말고 그 행을 이 라이브러리로 넘겨받는다. (UNIQUE 오류 방지)
+                    book = db.scalar(select(Book).where(Book.path == fpath))
+                    if book is not None:
+                        is_new = False
+                        was_trashed = (book.status == "trashed")
+
+                if is_new:
+                    book = Book(
+                        series_id=series.id, library_id=lib.id, path=fpath, fmt=fmt,
+                        title=meta["title"], sort_title=str(meta["title"]).lower(),
+                        file_size=size, mtime=mtime, status="active",
+                        created_at=utcnow(), updated_at=utcnow(),
+                    )
+                    db.add(book)
+                    db.flush()
+                    scan_status["added"] = int(scan_status["added"]) + 1  # type: ignore
+                else:
+                    book.series_id = series.id
+                    book.library_id = lib.id
+                    book.status = "active"
+                    book.trashed_at = None
+                    _write_book_fields(book, meta, size, mtime)
+                    db.flush()
+                    if was_trashed:
+                        scan_status["restored"] = int(scan_status["restored"]) + 1  # type: ignore
+                    else:
+                        scan_status["updated"] = int(scan_status["updated"]) + 1  # type: ignore
+
+                if is_new:
+                    _write_book_fields(book, meta, size, mtime)
+                    db.flush()
+
+                _apply_auto_tags(db, book, all_auto, tag_cache)
+
+                # 병렬 단계에서 미리 만들어 둔 표지를 기록 (여기선 파일 쓰기만 → 빠름)
+                want_thumb = need_thumb or (was_trashed and not thumbnails.book_thumb_path(book.id).exists())
+                if want_thumb and opts.get("thumbnails", True):
+                    jpeg = pre.get("thumb")
+                    if jpeg is None and was_trashed:
+                        jpeg = thumbnails.render_thumb_jpeg(fpath, fmt, str(meta["title"]))
+                    ok = thumbnails.write_thumb_jpeg(book.id, jpeg)
+                    book.has_thumb = bool(ok) or book.has_thumb
+
+                # EPUB 목차·삽화: 병렬 단계 결과를 저장 (열 때 대기 없이 바로 보이도록)
+                est = pre.get("epub")
+                if est:
+                    try:
+                        book.epub_meta = json.dumps(est, ensure_ascii=False)
+                        scan_status["epub_indexed"] = int(scan_status.get("epub_indexed", 0)) + 1  # type: ignore
+                    except Exception:
+                        pass
+                    # 삽화 썸네일 미리 생성 → 목록이 즉시 뜨고 원본(수 MB)을 받지 않아도 됨
+                    if opts.get("thumbnails", True) and est.get("images"):
+                        try:
+                            thumbnails.build_epub_image_thumbs(book.id, fpath, est["images"])
+                        except Exception:
+                            pass
                 db.flush()
 
-            _apply_auto_tags(db, book, all_auto, tag_cache)
-
-            # 병렬 단계에서 미리 만들어 둔 표지를 기록 (여기선 파일 쓰기만 → 빠름)
-            want_thumb = need_thumb or (was_trashed and not thumbnails.book_thumb_path(book.id).exists())
-            if want_thumb and opts.get("thumbnails", True):
-                jpeg = pre.get("thumb")
-                if jpeg is None and was_trashed:
-                    jpeg = thumbnails.render_thumb_jpeg(fpath, fmt, str(meta["title"]))
-                ok = thumbnails.write_thumb_jpeg(book.id, jpeg)
-                book.has_thumb = bool(ok) or book.has_thumb
-
-            # EPUB 목차·삽화: 병렬 단계 결과를 저장 (열 때 대기 없이 바로 보이도록)
-            est = pre.get("epub")
-            if est:
-                try:
-                    book.epub_meta = json.dumps(est, ensure_ascii=False)
-                    scan_status["epub_indexed"] = int(scan_status.get("epub_indexed", 0)) + 1  # type: ignore
-                except Exception:
-                    pass
-            db.flush()
-
-            touched_series.add(series.id)
-            chunk_series.add(series.id)
-            scan_status["processed"] = int(scan_status["processed"]) + 1  # type: ignore
+                touched_series.add(series.id)
+                chunk_series.add(series.id)
+                scan_status["processed"] = int(scan_status["processed"]) + 1  # type: ignore
 
 
+            except ScanCancelled:
+                raise                      # 취소는 그대로 전파
+            except Exception as e:
+                # 파일 하나의 오류로 전체 스캔이 중단되지 않도록 격리
+                db.rollback()
+                scan_status['file_errors'] = int(scan_status.get('file_errors', 0)) + 1
+                if not scan_status.get('last_file_error'):
+                    scan_status['last_file_error'] = f'{os.path.basename(fpath)}: {e}'
+                scan_status['processed'] = int(scan_status['processed']) + 1
+                continue
         _publish_chunk(db, lib, chunk_series)
     finally:
         if pool is not None:
@@ -581,7 +610,11 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
                 scan_status["trashed"] = int(scan_status["trashed"]) + 1  # type: ignore
     db.commit()
 
-    _recompute_series(db, lib, touched_series)
+    try:
+        _recompute_series(db, lib, touched_series)
+    except Exception as e:
+        scan_status['last_file_error'] = f'집계 오류: {e}'
+        db.rollback()
     db.commit()
 
 

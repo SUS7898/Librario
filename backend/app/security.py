@@ -111,7 +111,7 @@ def accessible_library_ids(db: Session, user: User):
         return [l.id for l in db.scalars(select(Library)).all()]
     ids = set()
     for lib in db.scalars(select(Library)).all():
-        if not lib.restricted:
+        if not lib.restricted and not lib.private:
             ids.add(lib.id)
     for lib in user.granted_libraries:
         ids.add(lib.id)

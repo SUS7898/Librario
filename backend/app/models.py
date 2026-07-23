@@ -48,6 +48,8 @@ class Library(Base):
     path = Column(String(1024), unique=True, nullable=False)
     # restricted=True 이면 명시적으로 권한 부여받은 사용자(+관리자)만 접근 가능 (예: 성인물)
     restricted = Column(Boolean, nullable=False, default=False)
+    # True 면 성인물 여부와 무관하게 '권한 부여받은 사용자 + 관리자' 만 접근
+    private = Column(Boolean, nullable=False, default=False)
     # 사용자가 지정한 표시 순서 (작을수록 앞)
     sort_order = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=utcnow)
@@ -147,6 +149,32 @@ class Rating(Base):
     updated_at = Column(DateTime, default=utcnow)
 
     __table_args__ = (UniqueConstraint("user_id", "book_id", name="uq_rating_user_book"),)
+
+
+class SeriesRating(Base):
+    __tablename__ = "series_ratings"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    series_id = Column(ForeignKey("series.id", ondelete="CASCADE"), nullable=False, index=True)
+    value = Column(Integer, nullable=False, default=0)  # 1~5
+    updated_at = Column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "series_id", name="uq_srating_user_series"),)
+
+
+class Favorite(Base):
+    """즐겨찾기. series_id 또는 book_id 중 하나만 채워진다."""
+    __tablename__ = "favorites"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    series_id = Column(ForeignKey("series.id", ondelete="CASCADE"), nullable=True, index=True)
+    book_id = Column(ForeignKey("books.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_at = Column(DateTime, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "series_id", name="uq_fav_user_series"),
+        UniqueConstraint("user_id", "book_id", name="uq_fav_user_book"),
+    )
 
 
 class Setting(Base):

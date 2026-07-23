@@ -19,6 +19,7 @@ def _lib_dict(db: Session, lib: Library):
         "name": lib.name,
         "path": lib.path,
         "restricted": lib.restricted,
+        "private": bool(getattr(lib, "private", False)),
         "sort_order": lib.sort_order or 0,
         "series_count": series_cnt,
         "book_count": book_cnt,
@@ -42,7 +43,8 @@ def create_library(body: schemas.LibraryCreateIn, _: User = Depends(security.req
         raise HTTPException(status_code=400, detail="이미 등록된 경로입니다.")
     max_order = db.scalar(select(func.max(Library.sort_order))) or 0
     lib = Library(name=body.name.strip() or os.path.basename(path), path=path,
-                  restricted=body.restricted, sort_order=max_order + 1)
+                  restricted=body.restricted, private=bool(body.private),
+                  sort_order=max_order + 1)
     db.add(lib)
     db.commit()
     db.refresh(lib)
@@ -60,6 +62,8 @@ def update_library(library_id: int, body: schemas.LibraryUpdateIn,
         lib.name = body.name.strip()
     if body.restricted is not None:
         lib.restricted = body.restricted
+    if body.private is not None:
+        lib.private = body.private
     db.commit()
     db.refresh(lib)
     return _lib_dict(db, lib)

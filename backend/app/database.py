@@ -61,6 +61,7 @@ _COLUMN_MIGRATIONS = {
     ],
     "libraries": [
         ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+        ("private", "BOOLEAN NOT NULL DEFAULT 0"),
     ],
 }
 
@@ -84,3 +85,56 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_columns()
     Base.metadata.create_all(bind=engine)  # 인덱스 등 재확인
+
+
+# ---------------------------------------------------------------------------
+# DB 최적화 (주기 실행 / 관리자 수동 실행)
+#  - WAL 체크포인트: 커진 -wal 파일을 본체로 합침
+#  - ANALYZE/optimize: 쿼리 계획 통계 갱신 (대량 스캔 후 조회 속도에 영향)
+#  - VACUUM: 삭제로 생긴 빈 공간 회수 (파일 크기 감소)
+# ---------------------------------------------------------------------------
+def optimize_db(full: bool = True) -> dict:
+    import os as _os
+    from sqlalchemy import text as _text
+    path = str(config.DB_PATH)
+    before = None
+    try:
+        if path and _os.path.exists(path):
+            before = _os.path.getsize(path)
+    except OSError:
+        before = None
+    steps = []
+    with engine.connect() as conn:
+        raw = conn.connection
+        try:
+            conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+            steps.append("wal_checkpoint")
+        except Exception:
+            pass
+        try:
+            conn.exec_driver_sql("ANALYZE")
+            steps.append("analyze")
+        except Exception:
+            pass
+        try:
+            conn.exec_driver_sql("PRAGMA optimize")
+            steps.append("optimize")
+        except Exception:
+            pass
+        if full:
+            try:
+                old_iso = raw.isolation_level
+                raw.isolation_level = None      # VACUUM 은 트랜잭션 밖에서만 가능
+                raw.execute("VACUUM")
+                raw.isolation_level = old_iso
+                steps.append("vacuum")
+            except Exception:
+                pass
+    after = None
+    try:
+        if path and _os.path.exists(path):
+            after = _os.path.getsize(path)
+    except OSError:
+        after = None
+    return {"ok": True, "steps": steps, "size_before": before, "size_after": after,
+            "freed": (before - after) if (before and after) else 0}

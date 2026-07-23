@@ -366,3 +366,32 @@ def put_threads(body: schemas.ThreadsIn,
     from ..main import apply_read_threads
     applied = apply_read_threads(int(cur.get("read_threads") or 0))
     return {**cur, "applied_read_threads": applied}
+
+
+# =========================================================================
+# 데이터베이스 최적화
+# =========================================================================
+@router.post("/db/optimize")
+def db_optimize(full: bool = True, _: User = Depends(security.require_admin),
+                db: Session = Depends(get_db)):
+    import datetime as _dt
+    from ..database import optimize_db
+    if scanner.scan_status.get("running"):
+        raise HTTPException(status_code=409, detail="스캔 중에는 실행할 수 없습니다.")
+    r = optimize_db(full=full)
+    settings_store.set_json(db, "last_db_optimize", _dt.datetime.utcnow().isoformat())
+    return r
+
+
+@router.get("/db/info")
+def db_info(_: User = Depends(security.require_admin), db: Session = Depends(get_db)):
+    import os
+    from .. import config as cfg
+    size = 0
+    for suffix in ("", "-wal", "-shm"):
+        p = str(cfg.DB_PATH) + suffix
+        if os.path.exists(p):
+            size += os.path.getsize(p)
+    return {"size": size,
+            "last_optimize": settings_store.get_json(db, "last_db_optimize", None),
+            "auto_optimize_days": (settings_store.get_scan_schedule(db) or {}).get("optimize_every_days", 7)}

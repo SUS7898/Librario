@@ -14,6 +14,8 @@ from .models import Setting, utcnow
 
 # ---- 기본값 ----
 DEFAULT_SCAN_SCHEDULE = {
+    "optimize_enabled": True,
+    "optimize_every_days": 7,
     # 빠른(증분) 예약 스캔: 변경/신규 파일만
     "quick_enabled": False,
     "quick_every_hours": 6,

@@ -276,7 +276,10 @@ def main():
         check("시리즈 sort=read", r.status_code == 200 and r.json()["total"] >= 1)
 
         # 라이브러리 순서 변경
-        r = client.post("/api/libraries", json={"name": "두번째", "path": str(lib_dir / "판타지"),
+        lib_dir2 = tmp / "lib2" / "기타"
+        lib_dir2.mkdir(parents=True, exist_ok=True)
+        make_cbz(lib_dir2 / "다른책.cbz", pages=2, comicinfo=True, title="다른책")
+        r = client.post("/api/libraries", json={"name": "두번째", "path": str(tmp / "lib2"),
                                                 "restricted": False})
         lib2 = r.json()["id"]
         r = client.get("/api/libraries")
@@ -295,6 +298,50 @@ def main():
         check("분석 by_format 존재", isinstance(j["by_format"], list))
         check("분석 by_library 존재", any(l["id"] == lib_id for l in j["by_library"]))
         check("분석 저장용량 ≥0", j["totals"]["size"] >= 0)
+
+        # -------- 즐겨찾기 / 시리즈 별점 / 비공개 라이브러리 --------
+        print("== 즐겨찾기 · 시리즈 별점 · 비공개 ==")
+        sid = client.get("/api/series", params={"library": lib_id}).json()["items"][0]["id"]
+        r = client.post(f"/api/favorites/series/{sid}")
+        check("시리즈 즐겨찾기 추가", r.status_code == 200 and r.json()["favorite"] is True)
+        r = client.get("/api/series", params={"library": lib_id})
+        check("직렬화에 favorite 반영", r.json()["items"][0]["favorite"] is True)
+        r = client.get("/api/series", params={"favorite": "true"})
+        check("즐겨찾기 필터", r.json()["total"] >= 1)
+        r = client.get("/api/home")
+        check("홈에 즐겨찾기 섹션", any(x["id"] == sid for x in r.json()["favorite_series"]))
+
+        r = client.put(f"/api/series/{sid}/rating", json={"value": 4})
+        check("시리즈 별점 저장", r.status_code == 200 and r.json()["value"] == 4)
+        r = client.get("/api/series", params={"library": lib_id})
+        check("내 별점 노출", r.json()["items"][0]["my_rating"] == 4)
+        r = client.get("/api/series", params={"min_rating": 4})
+        check("별점 4 이상 필터", r.json()["total"] >= 1)
+        r = client.get("/api/series", params={"min_rating": 5})
+        check("별점 5 이상은 제외", all(x["id"] != sid for x in r.json()["items"]))
+        r = client.get("/api/series", params={"sort": "favorite", "order": "desc"})
+        check("즐겨찾기 우선 정렬", r.json()["items"][0]["id"] == sid)
+        r = client.put(f"/api/series/{sid}/rating", json={"value": 0})
+        check("별점 해제", client.get("/api/series", params={"library": lib_id}).json()["items"][0]["my_rating"] == 0)
+        r = client.delete(f"/api/favorites/series/{sid}")
+        check("즐겨찾기 해제", r.json()["favorite"] is False)
+
+        # 비공개 라이브러리: 일반 사용자에게 숨겨져야 함
+        client.patch(f"/api/libraries/{lib_id}", json={"private": True})
+        r = client.get("/api/libraries")
+        check("관리자는 비공개도 보임", any(l["id"] == lib_id and l["private"] for l in r.json()))
+        client.post("/api/auth/users", json={"username": "u1", "password": "pass1234",
+                                             "role": "user", "library_ids": []})
+        admin_cookies = dict(client.cookies)
+        client.post("/api/auth/login", json={"username": "u1", "password": "pass1234"})
+        r = client.get("/api/libraries")
+        check("일반 사용자에게 비공개 숨김", all(l["id"] != lib_id for l in r.json()))
+        r = client.get("/api/books", params={"library": lib_id})
+        check("비공개 라이브러리 책 접근 차단", r.status_code in (400, 403, 404) or r.json().get("total") == 0)
+        client.cookies.clear()
+        for k, v in admin_cookies.items():
+            client.cookies.set(k, v)
+        client.patch(f"/api/libraries/{lib_id}", json={"private": False})
 
         # -------- 스캔 취소 --------
         print("== 스캔 취소 ==")
