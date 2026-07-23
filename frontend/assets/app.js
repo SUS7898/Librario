@@ -1538,26 +1538,67 @@ async function openEpubReader(book){
     rendition = bookObj.renderTo(area, {
       width:'100%', height:'100%', spread:'none',
       flow: prefs.epubFlow==='scrolled'?'scrolled-doc':'paginated',
-      allowScriptedContent:true,
+      allowScriptedContent:false,
     });
     applyEpubTheme(rendition);
     const startCfi = (b.progress && b.progress.position) || undefined;
-    await rendition.display(startCfi);
+    try{
+      await rendition.display(startCfi);
+    }catch(e){
+      // 저장된 위치가 깨졌으면 처음부터
+      await rendition.display();
+    }
   }catch(e){
-    clear(area).append(h('div',{class:'center-pad'},'EPUB 렌더링 실패: '+e.message));
+    clear(area).append(h('div',{class:'center-pad'},
+      h('p',{},'EPUB 렌더링 실패: '+e.message),
+      h('button',{class:'btn',style:{marginTop:'10px'},onclick:()=>{
+        prefs.epubFlow='scrolled'; savePrefs(); closeOverlay(); openEpubReader(book);
+      }},'스크롤 모드로 다시 열기')));
     return;
   }
 
-  // 진행률
-  bookObj.ready.then(()=>bookObj.locations.generate(1600)).then(()=>{
-    rendition.on('relocated', loc=>{
-      const pct = bookObj.locations.percentageFromCfi(loc.start.cfi);
-      const p = Math.round((pct||0)*100);
-      slider.value=p; lbl.textContent=p+'%';
-      saveProgress(b.id, {position:loc.start.cfi, completed: loc.atEnd?true:undefined});
-    });
-  }).catch(()=>{});
-  slider.addEventListener('change', e=>{ if(bookObj.locations && bookObj.locations.length()){ const cfi=bookObj.locations.cfiFromPercentage(+e.target.value/100); rendition.display(cfi);} });
+  // ---- 진행률 ----
+  // 주의: locations.generate() 는 모든 챕터를 파싱합니다. 수백 화짜리 책에서는
+  // 휴대폰이 멈추거나 화면이 비어버리므로, 큰 책은 스파인(챕터) 위치 기준으로 계산합니다.
+  const spineLen = (bookObj.spine && bookObj.spine.spineItems) ? bookObj.spine.spineItems.length : 0;
+  const HEAVY = spineLen > 80;
+  let useLocations = false;
+
+  const pctFromSpine = (loc)=>{
+    if(!spineLen) return 0;
+    const idx = (loc && loc.start && typeof loc.start.index === 'number') ? loc.start.index : 0;
+    return Math.round(((idx + 1) / spineLen) * 100);
+  };
+
+  rendition.on('relocated', loc=>{
+    let p;
+    if(useLocations && bookObj.locations && bookObj.locations.length()){
+      p = Math.round((bookObj.locations.percentageFromCfi(loc.start.cfi) || 0) * 100);
+    }else{
+      p = pctFromSpine(loc);
+    }
+    slider.value = p;
+    lbl.textContent = p + '%' + (HEAVY && spineLen ? ` (${(loc.start&&loc.start.index!=null?loc.start.index+1:1)}/${spineLen})` : '');
+    saveProgress(b.id, {position: loc.start.cfi, completed: loc.atEnd ? true : undefined});
+  });
+
+  if(!HEAVY){
+    bookObj.ready
+      .then(()=>bookObj.locations.generate(1600))
+      .then(()=>{ useLocations = true; })
+      .catch(()=>{});
+  }
+
+  slider.addEventListener('change', e=>{
+    const v = +e.target.value;
+    if(useLocations && bookObj.locations && bookObj.locations.length()){
+      rendition.display(bookObj.locations.cfiFromPercentage(v/100));
+    }else if(spineLen){
+      const idx = Math.min(spineLen-1, Math.max(0, Math.round(v/100*spineLen)-1));
+      const item = bookObj.spine.spineItems[idx];
+      if(item) rendition.display(item.href);
+    }
+  });
 
   // 탭/키보드
   rendition.on('click', ()=>reader.classList.toggle('hud-hidden'));
@@ -1589,9 +1630,26 @@ async function openEpubImages(bookObj, rendition){
 
   try{
     if(!_epubImgCache || _epubImgCache.book !== bookObj){
-      const found = [];
+      await bookObj.ready;
+      // 1) 매니페스트로 이미지 존재 여부를 먼저 확인 (대형 책에서 헛스캔 방지)
+      const res = (bookObj.resources && bookObj.resources.resources) || [];
+      const imageRes = res.filter(r => String(r.type||'').startsWith('image'));
+      if(!imageRes.length){
+        clear(grid).append(h('div',{class:'center-pad'},'이 책에는 삽화가 없습니다.'));
+        _epubImgCache = {book:bookObj, images:[]};
+        return;
+      }
+      // 2) 어느 챕터에 있는지 찾기 위해 스파인을 스캔 (상한을 둬서 멈추지 않게)
       const spine = bookObj.spine && bookObj.spine.spineItems ? bookObj.spine.spineItems : [];
-      for(const item of spine){
+      const MAX_CHAPTERS = 150, MAX_IMAGES = 200;
+      const status = h('div',{class:'muted',style:{gridColumn:'1/-1',fontSize:'12.5px',padding:'6px 2px'}},'');
+      clear(grid).append(status);
+      const found = [];
+      const limit = Math.min(spine.length, MAX_CHAPTERS);
+      for(let i=0;i<limit;i++){
+        const item = spine[i];
+        status.textContent = `삽화 찾는 중… ${i+1}/${limit}장 · ${found.length}개 발견`;
+        if(i % 12 === 0) await new Promise(r=>setTimeout(r,0)); // UI 멈춤 방지
         let doc=null;
         try{ doc = await item.load(bookObj.load.bind(bookObj)); }catch(e){ continue; }
         try{
@@ -1599,24 +1657,27 @@ async function openEpubImages(bookObj, rendition){
           for(const im of imgs){
             const raw = im.getAttribute('src') || im.getAttribute('xlink:href') || im.getAttribute('href');
             if(!raw) continue;
-            // 챕터 경로 기준 상대경로 → epub 내부 절대경로
             let abs;
             try{ abs = new URL(raw, 'http://x/'+item.href).pathname.replace(/^\//,''); }
             catch(e){ abs = raw.replace(/^\.?\//,''); }
             let url=null;
             try{ url = await bookObj.archive.createUrl(abs, {base64:false}); }catch(e){ url=null; }
             if(url) found.push({url, href:item.href});
-            if(found.length>=200) break;
+            if(found.length>=MAX_IMAGES) break;
           }
         }catch(e){}
         try{ item.unload(); }catch(e){}
-        if(found.length>=200) break;
+        if(found.length>=MAX_IMAGES) break;
       }
-      _epubImgCache = {book:bookObj, images:found};
+      _epubImgCache = {book:bookObj, images:found, partial: spine.length > limit};
     }
     const list = _epubImgCache.images;
     clear(grid);
     if(!list.length){ grid.append(h('div',{class:'center-pad'},'이 책에는 삽화가 없습니다.')); return; }
+    if(_epubImgCache.partial){
+      grid.append(h('div',{class:'muted',style:{gridColumn:'1/-1',fontSize:'12px',marginBottom:'2px'}},
+        '※ 책이 커서 앞부분 위주로 찾았습니다.'));
+    }
     list.forEach(it=>{
       grid.append(h('div',{class:'img-cell', onclick:()=>{
         closeOverlay();
@@ -1641,6 +1702,10 @@ function applyEpubTheme(rendition){
       'padding':'0 6px' },
     'p':{ 'line-height':prefs.lineHeight+'!important' },
     'a':{ 'color':'#d9973f!important' },
+    // 큰 표지/삽화가 페이지를 밀어내 빈 화면이 되는 것을 방지
+    'img, svg, image':{ 'max-width':'100%!important', 'max-height':'95vh!important',
+      'height':'auto!important', 'object-fit':'contain' },
+    'table, pre':{ 'max-width':'100%!important' },
   });
   rendition.themes.select('md');
   rendition.themes.fontSize(prefs.fontSize+'%');
