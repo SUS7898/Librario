@@ -241,6 +241,8 @@ label.field > span{display:block;font-size:13px;color:var(--muted);margin-bottom
   width:auto;height:auto}
 .comic-paged.fit-original img{width:auto;height:auto;max-width:none;max-height:none;zoom:var(--czoomf,1)}
 .tap-zones{position:absolute;inset:0;z-index:2;display:flex}
+.tap-zones.lr{flex-direction:row}
+.tap-zones.tb{flex-direction:column}
 .tap-zones .z{flex:1}
 .tap-zones .z.mid{flex:0 0 34%}
 
@@ -307,3 +309,14 @@ button:disabled{opacity:.38;pointer-events:none}
   aspect-ratio:3/4;border:1px solid var(--line-soft);transition:border-color .15s}
 .img-cell:hover{border-color:var(--amber)}
 .img-cell img{width:100%;height:100%;object-fit:cover;display:block}
+
+
+/* EPUB 목차 목록 */
+.toc-list{max-height:62dvh;overflow-y:auto;margin:0 -4px}
+.toc-row{display:flex;gap:10px;align-items:baseline;padding:11px 10px;border-radius:9px;
+  cursor:pointer;border-bottom:1px solid var(--line-soft)}
+.toc-row:last-child{border-bottom:none}
+.toc-row:hover{background:var(--amber-soft)}
+.toc-row.cur{background:var(--amber-soft);box-shadow:inset 3px 0 0 var(--amber)}
+.toc-num{flex:0 0 auto;min-width:34px;font-size:11.5px;color:var(--muted-2);font-variant-numeric:tabular-nums}
+.toc-title{flex:1;font-size:14px;line-height:1.45;word-break:break-word}

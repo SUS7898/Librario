@@ -96,6 +96,8 @@ class Book(Base):
     meta_updated_at = Column(DateTime, nullable=True) # 마지막 메타데이터 추출 시각
     # ---- 휴지통(소프트 삭제) ----
     status = Column(String(10), nullable=False, default="active", index=True)  # active | trashed
+    # EPUB 목차/삽화 사전분석 결과(JSON 문자열)
+    epub_meta = Column(Text)
     trashed_at = Column(DateTime, nullable=True)     # 휴지통 이동 시각
     has_thumb = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=utcnow, index=True)

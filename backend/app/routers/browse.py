@@ -415,3 +415,63 @@ def series_thumbnail(series_id: int, user: User = Depends(security.get_current_u
         return Response(status_code=404)
     return FileResponse(str(p), media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ============================ EPUB 구조(목차/삽화) ============================
+def _epub_meta_of(book) -> dict:
+    import json
+    if not book.epub_meta:
+        return {}
+    try:
+        return json.loads(book.epub_meta)
+    except Exception:
+        return {}
+
+
+@router.get("/books/{book_id}/toc")
+def book_toc(book_id: int, user: User = Depends(security.get_current_user),
+             db: Session = Depends(get_db)):
+    """EPUB 챕터 목록. 스캔 시 미리 분석해 둔 결과를 즉시 반환."""
+    book = _require_book(db, user, book_id)
+    meta = _epub_meta_of(book)
+    if not meta and book.fmt == "epub":
+        # 아직 분석 전이면 지금 한 번 분석해서 저장 (다음부터는 즉시)
+        from .. import scanner
+        if scanner._precompute_epub_meta(book, book.path):
+            db.commit()
+            meta = _epub_meta_of(book)
+    return {"indexed": bool(meta),
+            "spine_len": meta.get("spine_len", 0),
+            "chapters": meta.get("chapters", [])}
+
+
+@router.get("/books/{book_id}/epub-images")
+def book_epub_images(book_id: int, user: User = Depends(security.get_current_user),
+                     db: Session = Depends(get_db)):
+    """EPUB 삽화 목록(썸네일 URL 포함). 클릭 시 이동할 챕터 href 도 함께."""
+    book = _require_book(db, user, book_id)
+    meta = _epub_meta_of(book)
+    if not meta and book.fmt == "epub":
+        from .. import scanner
+        if scanner._precompute_epub_meta(book, book.path):
+            db.commit()
+            meta = _epub_meta_of(book)
+    imgs = meta.get("images", [])
+    return {"indexed": bool(meta), "images": imgs}
+
+
+@router.get("/books/{book_id}/epub-asset")
+def book_epub_asset(book_id: int, href: str = Query(...),
+                    user: User = Depends(security.get_current_user),
+                    db: Session = Depends(get_db)):
+    """EPUB 내부 파일(삽화)을 꺼내서 전달."""
+    from ..formats import epub_asset_bytes
+    book = _require_book(db, user, book_id)
+    if book.fmt != "epub":
+        raise HTTPException(status_code=400, detail="EPUB 이 아닙니다.")
+    got = epub_asset_bytes(book.path, href)
+    if not got:
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    data, ctype = got
+    return Response(content=data, media_type=ctype,
+                    headers={"Cache-Control": "private, max-age=86400"})

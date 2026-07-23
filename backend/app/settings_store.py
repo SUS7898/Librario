@@ -121,3 +121,25 @@ def get_last_run(db: Session, kind: str) -> Optional[dt.datetime]:
 def set_last_run(db: Session, kind: str, when: Optional[dt.datetime] = None) -> None:
     when = when or utcnow()
     set_json(db, f"last_scan_{kind}", when.isoformat())
+
+
+# ---- 스캔 옵션 (스캔/예약 스캔 시 무엇을 미리 처리할지) ----
+DEFAULT_SCAN_OPTIONS = {
+    "thumbnails": True,       # 표지 썸네일 생성
+    "page_count": True,       # 만화/PDF 페이지 수 계산
+    "metadata": True,         # ComicInfo.xml / EPUB 메타데이터 읽기
+    "filename_tags": True,    # 파일명에서 태그 추출
+    "epub_structure": True,   # EPUB 목차·삽화 미리 분석 (열 때 대기 없음)
+}
+
+
+def get_scan_options(db) -> dict:
+    return get_json(db, "scan_options", DEFAULT_SCAN_OPTIONS)
+
+
+def set_scan_options(db, value: dict) -> dict:
+    cur = get_scan_options(db)
+    cur.update({k: bool(v) for k, v in (value or {}).items()
+                if k in DEFAULT_SCAN_OPTIONS})
+    set_json(db, "scan_options", cur)
+    return cur

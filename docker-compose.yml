@@ -21,6 +21,9 @@ services:
       COOKIE_SECURE: "false" # HTTPS(역방향 프록시) 전용이면 "true"
       SCAN_ON_STARTUP: "true"
       SCHEDULER_ENABLED: "true"
+      # 스캔 병렬 처리 스레드 수. 비우면 CPU 코어 수에 맞춰 자동(DS423+ 4코어 → 5).
+      # NAS 가 버거우면 2~3 으로 낮추세요.
+      SCAN_WORKERS: ""
 
     volumes:
       - librario-data:/data

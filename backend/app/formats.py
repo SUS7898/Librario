@@ -308,3 +308,178 @@ def read_text_file(path: str, limit_bytes: Optional[int] = None) -> str:
         except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# EPUB 구조(목차/삽화) 사전 분석 — 스캔 시 1회 수행해 DB에 저장한다.
+# 리더가 열 때마다 수백 챕터를 파싱하지 않도록 하기 위한 것.
+# ---------------------------------------------------------------------------
+_IMG_SRC_RE = re.compile(
+    rb'<(?:img|image)\b[^>]*?(?:src|xlink:href|href)\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE)
+_HEADING_RE = re.compile(rb'<(h[1-6])[^>]*>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
+_TITLE_RE = re.compile(rb'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+_TAG_STRIP_RE = re.compile(rb'<[^>]+>')
+
+
+def _clean_inner(raw: bytes) -> str:
+    txt = _TAG_STRIP_RE.sub(b" ", raw)
+    try:
+        s = txt.decode("utf-8", "replace")
+    except Exception:
+        return ""
+    s = s.replace("\xa0", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _ncx_titles(z: ZipFile, base: str, ncx_href: str) -> Dict[str, str]:
+    """toc.ncx / nav 문서에서 href -> 제목 매핑을 뽑는다."""
+    out: Dict[str, str] = {}
+    full = posixpath.normpath(posixpath.join(base, ncx_href)) if base else ncx_href
+    try:
+        root = ET.fromstring(z.read(full))
+    except (ET.ParseError, KeyError, OSError):
+        return out
+    ncx_base = posixpath.dirname(full)
+    for nav in root.iter():
+        if _local(nav.tag) not in ("navpoint", "a"):
+            continue
+        label, src = None, None
+        if _local(nav.tag) == "a":            # EPUB3 nav.xhtml
+            src = nav.get("href")
+            label = "".join(nav.itertext()).strip()
+        else:                                  # EPUB2 toc.ncx
+            for ch in nav.iter():
+                ln = _local(ch.tag)
+                if ln == "text" and label is None and ch.text:
+                    label = ch.text.strip()
+                elif ln == "content" and src is None:
+                    src = ch.get("src")
+        if not src or not label:
+            continue
+        src = src.split("#")[0]
+        key = posixpath.normpath(posixpath.join(ncx_base, src)) if ncx_base else src
+        out.setdefault(key, label)
+    return out
+
+
+def epub_structure(path: str, max_chapters: int = 2000,
+                   max_images: int = 400) -> Optional[Dict[str, object]]:
+    """
+    EPUB 목차(챕터)와 삽화 목록을 추출한다.
+    return {"spine_len": n,
+            "chapters": [{"i":0,"title":"1화","href":"Text/ch1.html"}, ...],
+            "images":   [{"href":"Images/a.jpg","chapter":"Text/ch1.html","title":"1화"}, ...]}
+    """
+    try:
+        with ZipFile(path, "r") as z:
+            opf = _epub_opf_path(z)
+            if not opf:
+                return None
+            base = posixpath.dirname(opf)
+            try:
+                root = ET.fromstring(z.read(opf))
+            except (ET.ParseError, KeyError, OSError):
+                return None
+
+            manifest: Dict[str, Dict[str, str]] = {}
+            spine_ids: List[str] = []
+            ncx_href = None
+            toc_attr = None
+            for el in root.iter():
+                ln = _local(el.tag)
+                if ln == "item":
+                    iid = el.get("id") or ""
+                    manifest[iid] = {"href": el.get("href") or "",
+                                     "media": (el.get("media-type") or "").lower(),
+                                     "props": (el.get("properties") or "").lower()}
+                elif ln == "spine":
+                    toc_attr = el.get("toc")
+                elif ln == "itemref":
+                    idref = el.get("idref")
+                    if idref:
+                        spine_ids.append(idref)
+
+            # 목차 문서 찾기 (EPUB2 ncx 우선, 없으면 EPUB3 nav)
+            if toc_attr and toc_attr in manifest:
+                ncx_href = manifest[toc_attr]["href"]
+            else:
+                for it in manifest.values():
+                    if "nav" in it["props"] or it["media"] == "application/x-dtbncx+xml":
+                        ncx_href = it["href"]
+                        break
+            titles = _ncx_titles(z, base, ncx_href) if ncx_href else {}
+
+            names = set(z.namelist())
+            chapters: List[Dict[str, object]] = []
+            images: List[Dict[str, str]] = []
+
+            for i, sid in enumerate(spine_ids[:max_chapters]):
+                item = manifest.get(sid)
+                if not item or not item["href"]:
+                    continue
+                href = item["href"]
+                full = posixpath.normpath(posixpath.join(base, href)) if base else href
+                title = titles.get(full)
+                data = None
+                if full in names:
+                    try:
+                        data = z.read(full)
+                    except (KeyError, OSError):
+                        data = None
+                # 목차에 제목이 없으면 본문 h1~h6 / title 에서 추출
+                if not title and data:
+                    m = _HEADING_RE.search(data)          # h1~h6 우선
+                    if m:
+                        title = _clean_inner(m.group(2))[:200] or None
+                    if not title:
+                        m = _TITLE_RE.search(data)        # 없으면 <title>
+                        if m:
+                            title = _clean_inner(m.group(1))[:200] or None
+                if not title:
+                    title = f"{i + 1}장"
+                chapters.append({"i": i, "title": title, "href": href})
+
+                # 삽화 수집
+                if data is not None and len(images) < max_images:
+                    chap_dir = posixpath.dirname(full)
+                    for m in _IMG_SRC_RE.finditer(data):
+                        raw = m.group(1).decode("utf-8", "replace").strip()
+                        if not raw or raw.startswith("data:"):
+                            continue
+                        target = posixpath.normpath(posixpath.join(chap_dir, raw))
+                        if target not in names:
+                            continue
+                        rel = target[len(base) + 1:] if base and target.startswith(base + "/") else target
+                        images.append({"href": rel, "chapter": href, "title": title})
+                        if len(images) >= max_images:
+                            break
+
+            return {"spine_len": len(spine_ids), "chapters": chapters, "images": images}
+    except (BadZipFile, OSError, KeyError):
+        return None
+
+
+def epub_asset_bytes(path: str, href: str) -> Optional[Tuple[bytes, str]]:
+    """EPUB 안의 파일(삽화 등)을 꺼내 (bytes, content-type) 으로 돌려준다."""
+    if not href or ".." in href:
+        return None
+    try:
+        with ZipFile(path, "r") as z:
+            opf = _epub_opf_path(z)
+            base = posixpath.dirname(opf) if opf else ""
+            candidates = []
+            if base:
+                candidates.append(posixpath.normpath(posixpath.join(base, href)))
+            candidates.append(posixpath.normpath(href))
+            names = set(z.namelist())
+            for c in candidates:
+                if c in names:
+                    ext = ext_of(c)
+                    ctype = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                             ".gif": "image/gif", ".webp": "image/webp",
+                             ".svg": "image/svg+xml"}.get(ext, "application/octet-stream")
+                    return z.read(c), ctype
+    except (BadZipFile, OSError, KeyError):
+        return None
+    return None

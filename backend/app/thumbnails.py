@@ -98,6 +98,30 @@ def raw_cover_for_book(path: str, fmt: str) -> Optional[bytes]:
     return None
 
 
+def render_thumb_jpeg(path: str, fmt: str, title: str = "") -> Optional[bytes]:
+    """표지를 추출·리사이즈해 JPEG 바이트를 만든다 (무거운 작업, 병렬 처리 가능).
+    book_id 가 필요 없으므로 워커 스레드에서 미리 실행할 수 있다."""
+    raw = raw_cover_for_book(path, fmt)
+    jpeg = _resize_to_jpeg(raw) if raw else None
+    if jpeg is None:
+        jpeg = _placeholder_jpeg(title)
+    return jpeg
+
+
+def write_thumb_jpeg(book_id: int, jpeg: Optional[bytes]) -> bool:
+    """미리 만들어 둔 JPEG 를 book_id 경로에 기록 (가벼운 작업)."""
+    if not jpeg:
+        return False
+    try:
+        dst = book_thumb_path(book_id)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(jpeg)
+        return True
+    except OSError:
+        return False
+
+
 def generate_book_thumbnail(book_id: int, path: str, fmt: str, title: str = "") -> bool:
     """성공 시 True. 표지를 못 얻으면 TXT 등은 플레이스홀더 생성."""
     raw = raw_cover_for_book(path, fmt)

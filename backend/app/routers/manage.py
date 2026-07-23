@@ -328,3 +328,19 @@ def analytics(admin: User = Depends(security.require_admin), db: Session = Depen
         "recent_added_30d": recent_added,
         "my_reading": {"completed": completed, "in_progress": in_progress},
     }
+
+
+# =========================================================================
+# 스캔 옵션
+# =========================================================================
+@router.get("/scan/options")
+def get_scan_options(_: User = Depends(security.require_admin),
+                     db: Session = Depends(get_db)):
+    return settings_store.get_scan_options(db)
+
+
+@router.put("/scan/options")
+def put_scan_options(body: schemas.ScanOptionsIn,
+                     _: User = Depends(security.require_admin),
+                     db: Session = Depends(get_db)):
+    return settings_store.set_scan_options(db, body.model_dump(exclude_none=True))

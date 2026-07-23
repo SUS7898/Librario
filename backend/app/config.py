@@ -146,3 +146,18 @@ def parse_seed_libraries():
         if path:
             out.append((name, path))
     return out
+
+
+# ---- 스캔 병렬 처리 ----
+# 0 또는 미지정이면 CPU 코어 수에 맞춰 자동 결정 (I/O 대기가 많아 코어수+2 까지 허용)
+SCAN_WORKERS = _int("SCAN_WORKERS", 0)
+
+
+def scan_workers() -> int:
+    if SCAN_WORKERS and SCAN_WORKERS > 0:
+        return min(16, SCAN_WORKERS)
+    try:
+        n = os.cpu_count() or 2
+    except Exception:
+        n = 2
+    return max(2, min(8, n + 1))

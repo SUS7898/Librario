@@ -24,6 +24,10 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA busy_timeout=8000")
+    # 대량 스캔 시 쓰기 처리량 향상 (수만 권 스캔에서 체감 차이가 큼)
+    cursor.execute("PRAGMA cache_size=-40000")   # 약 40MB 페이지 캐시
+    cursor.execute("PRAGMA temp_store=MEMORY")
+    cursor.execute("PRAGMA mmap_size=268435456") # 256MB
     cursor.close()
 
 
@@ -50,6 +54,7 @@ _COLUMN_MIGRATIONS = {
         ("meta_updated_at", "DATETIME"),
         ("status", "VARCHAR(10) NOT NULL DEFAULT 'active'"),
         ("trashed_at", "DATETIME"),
+        ("epub_meta", "TEXT"),
     ],
     "series": [
         ("description", "TEXT"),

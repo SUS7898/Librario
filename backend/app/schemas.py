@@ -86,3 +86,11 @@ class MetadataApplyIn(BaseModel):
 
 class LibraryOrderIn(BaseModel):
     ids: List[int]
+
+
+class ScanOptionsIn(BaseModel):
+    thumbnails: Optional[bool] = None
+    page_count: Optional[bool] = None
+    metadata: Optional[bool] = None
+    filename_tags: Optional[bool] = None
+    epub_structure: Optional[bool] = None
