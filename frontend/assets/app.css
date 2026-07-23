@@ -223,7 +223,7 @@ label.field > span{display:block;font-size:13px;color:var(--muted);margin-bottom
 .pageslider .pnum{font-size:12px;color:var(--muted);min-width:64px;text-align:center}
 
 /* 만화 뷰어 — 상/하단 바에 가려 잘리지 않도록 여백 확보(HUD 숨기면 전체 사용) */
-.comic-webtoon{margin:0 auto;width:max-content;min-width:100%}
+.comic-webtoon{margin:0 auto;width:100%}
 .comic-webtoon img{display:block;background:var(--surface-2);min-height:120px;margin:0 auto}
 .comic-webtoon.fit-width img{width:var(--czoom,100%);max-width:none;height:auto}
 .comic-webtoon.fit-height img{height:calc(var(--czoomf,1) * 100dvh);width:auto;max-width:none}
@@ -248,6 +248,8 @@ label.field > span{display:block;font-size:13px;color:var(--muted);margin-bottom
 
 /* EPUB/TXT 뷰어 */
 #epub-area,#txt-area{position:absolute;inset:0}
+#epub-area{overflow-x:hidden}
+#epub-area iframe{max-width:100%}
 #txt-area{overflow:auto;padding:calc(var(--top-h) + 12px) 20px 90px}
 .txt-content{max-width:720px;margin:0 auto;white-space:pre-wrap;word-break:break-word}
 .reader-settings{position:absolute;right:0;bottom:0;left:0;z-index:7;background:var(--ink-2);

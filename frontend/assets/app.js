@@ -1252,11 +1252,38 @@ function candidateCard(book, c){
    ========================================================================== */
 async function adminScanSettings(body){
   clear(body).append(h('div',{class:'spinner'}));
-  let sc={}, tr={}, so={};
+  let sc={}, tr={}, so={}, th={};
   try{ sc=await api('/api/scan/schedule'); }catch(e){}
   try{ tr=await api('/api/scan/tag-rules'); }catch(e){}
   try{ so=await api('/api/scan/options'); }catch(e){}
+  try{ th=await api('/api/threads'); }catch(e){}
   clear(body);
+
+  // ---- 쓰레드 설정 (읽기용 / 작업용 분리) ----
+  const readIn = h('input',{class:'input',type:'number',min:'0',max:'128',
+    value:String(th.read_threads||0),style:{maxWidth:'90px'}});
+  const scanIn = h('input',{class:'input',type:'number',min:'0',max:'32',
+    value:String(th.scan_workers||0),style:{maxWidth:'90px'}});
+  body.append(
+    h('h3',{style:{margin:'4px 0 8px'}},'쓰레드 설정'),
+    h('p',{class:'muted',style:{fontSize:'13px',marginTop:0}},
+      `읽기용(책을 보는 요청)과 작업용(스캔)을 분리합니다. 0 이면 자동. 이 NAS 의 CPU 코어 ${th.cpu_count||'?'}개 · 자동 계산값 ${th.auto_scan_workers||'?'}개.`),
+    h('div',{class:'card-box'},
+      h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'읽기용 쓰레드 (요청 처리)'), readIn),
+      h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'작업용 쓰레드 (스캔)'), scanIn),
+      h('p',{class:'muted',style:{fontSize:'12px',margin:'8px 0 0'}},
+        '스캔 중에도 책이 잘 열리게 하려면 작업용을 코어 수보다 낮게(예: 2~3) 두세요.'),
+      h('div',{style:{marginTop:'10px'}},
+        h('button',{class:'btn primary',onclick:async(ev)=>{
+          ev.target.disabled=true;
+          try{
+            const r=await api('/api/threads',{method:'PUT',body:{
+              read_threads:parseInt(readIn.value)||0, scan_workers:parseInt(scanIn.value)||0}});
+            toast(`저장됨 · 읽기 ${r.applied_read_threads||'자동'} / 작업 ${r.scan_workers||'자동'}`);
+          }catch(e){ toast(e.message); }
+          ev.target.disabled=false;
+        }},'쓰레드 설정 저장'))
+    ));
 
   // ---- 스캔 옵션 ----
   const OPT_DEFS = [
@@ -1613,6 +1640,58 @@ const CDN = {
   pdf:'/assets/vendor/pdf.min.js',
   pdfworker:'/assets/vendor/pdf.worker.min.js',
 };
+/* EPUB 전용 터치 처리.
+   오버레이(.tap-zones)를 쓰면 스크롤 제스처가 막히므로, 클릭 좌표로 영역을 판정한다.
+   스크롤 모드에서는 화면 단위로 즉시 내려가고, 끝에 닿았을 때만 다음 챕터로 넘어간다. */
+function attachEpubTaps(rendition, area, reader){
+  function scroller(){
+    if(area.scrollHeight - area.clientHeight > 4) return area;
+    for(const el of area.querySelectorAll('*')){
+      if(el.scrollHeight - el.clientHeight > 4) return el;
+    }
+    return area;
+  }
+  function handle(ev){
+    const mode = prefs.tapMode || 'lr';
+    if(mode === 'off') return;
+    const r = area.getBoundingClientRect();
+    const w = r.width, hh = r.height;
+    // 아이프레임 내부 클릭은 좌표계가 area 와 동일하다
+    const x = ev.clientX, y = ev.clientY;
+    let zone;
+    if(mode === 'tb') zone = y < hh*0.3 ? 'prev' : (y > hh*0.7 ? 'next' : 'mid');
+    else              zone = x < w*0.3  ? 'prev' : (x > w*0.7  ? 'next' : 'mid');
+    if(zone === 'mid'){ reader.classList.toggle('hud-hidden'); return; }
+    if(prefs.tapInvert) zone = (zone === 'prev') ? 'next' : 'prev';
+
+    if(prefs.epubFlow === 'scrolled'){
+      const sc = scroller();
+      const step = Math.max(120, sc.clientHeight - 56);
+      const atEnd = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 6;
+      const atTop = sc.scrollTop <= 2;
+      if(zone === 'next'){
+        if(atEnd){ rendition.next(); }
+        else { sc.scrollTop = sc.scrollTop + step; }   // 애니메이션 없이 즉시 이동
+      }else{
+        if(atTop){ rendition.prev(); }
+        else { sc.scrollTop = sc.scrollTop - step; }
+      }
+      return;
+    }
+    if(zone === 'next') rendition.next(); else rendition.prev();
+  }
+  // 본문(아이프레임) 내부 클릭
+  rendition.on('rendered', (section, view)=>{
+    try{
+      const d = view && (view.document || (view.contents && view.contents.document));
+      if(d) d.addEventListener('click', handle);
+    }catch(e){}
+  });
+  // 본문 바깥 여백 클릭
+  area.addEventListener('click', handle);
+  return handle;
+}
+
 async function openEpubReader(book){
   const b = await api('/api/books/'+book.id);
   const aaBtn = h('button',{class:'icon-btn',html:IC.aa});
@@ -1723,9 +1802,7 @@ async function openEpubReader(book){
   // 설정 패널
   const panel = textSettingsPanel(()=>applyEpubTheme(rendition), ()=>{
     rendition.flow(prefs.epubFlow==='scrolled'?'scrolled-doc':'paginated');
-  }, false, ()=>attachTapZones(reader, {
-    prev:()=>rendition.prev(), next:()=>rendition.next(),
-    toggleHud:()=>reader.classList.toggle('hud-hidden')}));
+  }, false, null);
   reader.append(panel.node);
   aaBtn.addEventListener('click', panel.toggle);
 
@@ -1735,12 +1812,8 @@ async function openEpubReader(book){
   tocBtn.addEventListener('click', ()=>openEpubToc(b.id, rendition, curHref));
   imgBtn.addEventListener('click', ()=>openEpubImages(b.id, rendition));
 
-  // 화면 터치로 페이지/챕터 이동
-  attachTapZones(reader, {
-    prev: ()=>rendition.prev(),
-    next: ()=>rendition.next(),
-    toggleHud: ()=>reader.classList.toggle('hud-hidden'),
-  });
+  // 화면 터치로 페이지/챕터 이동 (스크롤을 막지 않는 방식)
+  attachEpubTaps(rendition, area, reader);
 }
 
 /* EPUB 챕터 목록 — 스캔 때 미리 분석해 둔 목차를 즉시 표시 */

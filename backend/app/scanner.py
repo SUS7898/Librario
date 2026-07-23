@@ -453,13 +453,16 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
                 out["epub"] = None
         return fpath, out
 
-    workers = config.scan_workers()
+    th = settings_store.get_threads(db)
+    workers = int(th.get("scan_workers") or 0) or config.scan_workers()
+    workers = max(1, min(32, workers))
     scan_status["workers"] = workers
     # 묶음 단위로 준비→DB반영을 반복한다.
     #  - 전체를 한 번에 준비하면 진행률이 멈춘 것처럼 보이고 메모리도 과도하게 쓴다.
     chunk_size = max(8, workers * 8)
     pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
     prepared: Dict[str, Dict[str, object]] = {}
+    chunk_series: Set[int] = set()
 
     def _prepare_chunk(start: int):
         """todo[start:start+chunk_size] 를 병렬로 미리 처리."""
@@ -480,6 +483,10 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
         for idx, (fpath, fn, mtime, size, fmt, need_thumb, need_epub) in enumerate(todo):
             _check_cancel()
             if fpath not in prepared:
+                # 이전 묶음 결과를 확정해 스캔 중에도 목록에 바로 보이도록 한다
+                if idx > 0:
+                    _publish_chunk(db, lib, chunk_series)
+                    chunk_series.clear()
                 _prepare_chunk(idx)
             pre = prepared.get(fpath)
             if pre is None:
@@ -553,11 +560,11 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
             db.flush()
 
             touched_series.add(series.id)
+            chunk_series.add(series.id)
             scan_status["processed"] = int(scan_status["processed"]) + 1  # type: ignore
-            if int(scan_status["processed"]) % 200 == 0:  # type: ignore
-                db.commit()
 
 
+        _publish_chunk(db, lib, chunk_series)
     finally:
         if pool is not None:
             pool.shutdown(wait=False)
@@ -576,6 +583,34 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
 
     _recompute_series(db, lib, touched_series)
     db.commit()
+
+
+def _publish_chunk(db: Session, lib: Library, series_ids: Set[int]):
+    """묶음 처리 결과를 커밋하고 해당 시리즈의 권수/표지를 갱신한다.
+    스캔이 전부 끝나기 전에도 새로 등록된 책이 목록에 보이게 하기 위한 것."""
+    if not series_ids:
+        db.commit()
+        return
+    try:
+        for sid in list(series_ids):
+            s = db.get(Series, sid)
+            if not s:
+                continue
+            cnt = db.scalar(select(func.count()).select_from(Book).where(
+                Book.series_id == sid, Book.status == "active")) or 0
+            s.book_count = cnt
+            # 표지가 아직 없으면 첫 책의 썸네일을 연결 (최종 집계에서 다시 정리됨)
+            if cnt and not s.cover_book_id:
+                first = db.scalars(
+                    select(Book).where(Book.series_id == sid, Book.status == "active",
+                                       Book.has_thumb == True)  # noqa: E712
+                    .order_by(Book.sort_title).limit(1)).first()
+                if first:
+                    s.cover_book_id = first.id
+                    thumbnails.link_series_thumbnail(sid, first.id)
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _recompute_series(db: Session, lib: Library, series_ids: Set[int]):

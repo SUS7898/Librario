@@ -344,3 +344,25 @@ def put_scan_options(body: schemas.ScanOptionsIn,
                      _: User = Depends(security.require_admin),
                      db: Session = Depends(get_db)):
     return settings_store.set_scan_options(db, body.model_dump(exclude_none=True))
+
+
+# =========================================================================
+# 쓰레드 설정 (읽기용 / 작업용)
+# =========================================================================
+@router.get("/threads")
+def get_threads(_: User = Depends(security.require_admin),
+                db: Session = Depends(get_db)):
+    import os
+    cur = settings_store.get_threads(db)
+    return {**cur, "cpu_count": os.cpu_count() or 1,
+            "auto_scan_workers": config.scan_workers()}
+
+
+@router.put("/threads")
+def put_threads(body: schemas.ThreadsIn,
+                _: User = Depends(security.require_admin),
+                db: Session = Depends(get_db)):
+    cur = settings_store.set_threads(db, body.model_dump(exclude_none=True))
+    from ..main import apply_read_threads
+    applied = apply_read_threads(int(cur.get("read_threads") or 0))
+    return {**cur, "applied_read_threads": applied}

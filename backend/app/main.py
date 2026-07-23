@@ -48,6 +48,19 @@ def _seed_libraries():
         db.close()
 
 
+def apply_read_threads(n: int) -> int:
+    """요청 처리(읽기)용 스레드 수 조정. 스캔 작업 스레드와 분리되어 있어
+    스캔 중에도 페이지 로딩이 느려지지 않도록 한다."""
+    try:
+        import anyio.to_thread
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        if n and n > 0:
+            limiter.total_tokens = max(4, min(128, int(n)))
+        return int(limiter.total_tokens)
+    except Exception:
+        return 0
+
+
 @app.on_event("startup")
 def _startup():
     config.ensure_dirs()
@@ -56,6 +69,19 @@ def _startup():
     if config.SCAN_ON_STARTUP:
         scanner.scan_all_async()
         print("[startup] 백그라운드 스캔 시작", flush=True)
+    # 읽기 전용 스레드 풀 크기 반영
+    try:
+        from .database import SessionLocal as _S
+        from . import settings_store as _ss
+        _db = _S()
+        try:
+            _n = int((_ss.get_threads(_db) or {}).get("read_threads") or 0)
+        finally:
+            _db.close()
+        if _n:
+            print(f"[startup] 읽기 스레드 {apply_read_threads(_n)}개", flush=True)
+    except Exception:
+        pass
     scheduler.start()  # 예약 스캔 스케줄러
 
 

@@ -143,3 +143,26 @@ def set_scan_options(db, value: dict) -> dict:
                 if k in DEFAULT_SCAN_OPTIONS})
     set_json(db, "scan_options", cur)
     return cur
+
+
+# ---- 쓰레드 설정 (읽기용 / 작업용 분리) ----
+DEFAULT_THREADS = {
+    "read_threads": 0,   # 0 = 자동. 페이지·이미지 전송 등 사용자 요청 처리용
+    "scan_workers": 0,   # 0 = 자동. 스캔(표지·메타·EPUB 분석)용
+}
+
+
+def get_threads(db) -> dict:
+    return get_json(db, "threads", DEFAULT_THREADS)
+
+
+def set_threads(db, value: dict) -> dict:
+    cur = get_threads(db)
+    for k in DEFAULT_THREADS:
+        if k in (value or {}) and value[k] is not None:
+            try:
+                cur[k] = max(0, min(32, int(value[k])))
+            except (TypeError, ValueError):
+                pass
+    set_json(db, "threads", cur)
+    return cur

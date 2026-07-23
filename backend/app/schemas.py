@@ -94,3 +94,8 @@ class ScanOptionsIn(BaseModel):
     metadata: Optional[bool] = None
     filename_tags: Optional[bool] = None
     epub_structure: Optional[bool] = None
+
+
+class ThreadsIn(BaseModel):
+    read_threads: Optional[int] = None
+    scan_workers: Optional[int] = None
