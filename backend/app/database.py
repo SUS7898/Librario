@@ -11,7 +11,12 @@ DATABASE_URL = f"sqlite:///{config.DB_PATH}"
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 20},
+    pool_size=config.DB_POOL_SIZE,
+    max_overflow=config.DB_MAX_OVERFLOW,
+    pool_timeout=config.DB_POOL_TIMEOUT,
+    pool_recycle=1800,
+    pool_pre_ping=True,
     future=True,
 )
 

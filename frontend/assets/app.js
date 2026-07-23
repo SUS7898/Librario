@@ -1360,7 +1360,7 @@ async function adminScanSettings(body){
       h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'읽기용 쓰레드 (요청 처리)'), readIn),
       h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'작업용 쓰레드 (스캔)'), scanIn),
       h('p',{class:'muted',style:{fontSize:'12px',margin:'8px 0 0'}},
-        '스캔 중에도 책이 잘 열리게 하려면 작업용을 코어 수보다 낮게(예: 2~3) 두세요.'),
+        '스캔 중에도 책이 잘 열리게 하려면 작업용을 코어 수보다 낮게(예: 2~3) 두세요. 읽기용은 DB 연결 수에 맞춰 자동으로 제한됩니다.'),
       h('div',{style:{marginTop:'10px'}},
         h('button',{class:'btn primary',onclick:async(ev)=>{
           ev.target.disabled=true;

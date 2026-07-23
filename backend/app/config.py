@@ -161,3 +161,11 @@ def scan_workers() -> int:
     except Exception:
         n = 2
     return max(2, min(8, n + 1))
+
+
+# ---- DB 커넥션 풀 ----
+# 표지/이미지 스트리밍이 동시에 많이 일어나므로 기본값(5+10)으로는 부족하다.
+# SQLite 는 연결 비용이 낮아 넉넉하게 잡아도 된다.
+DB_POOL_SIZE = _int("DB_POOL_SIZE", 20)
+DB_MAX_OVERFLOW = _int("DB_MAX_OVERFLOW", 60)
+DB_POOL_TIMEOUT = _int("DB_POOL_TIMEOUT", 20)

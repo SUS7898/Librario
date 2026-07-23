@@ -279,6 +279,7 @@ git push
 | `BROWSE_ROOTS` | (자동) | 라이브러리 추가 시 **폴더 찾기**가 보여줄 최상위 경로. 미지정이면 마운트된 폴더 자동 노출. 예 `/Comic;/Novel;/Book` |
 | `METADATA_ENABLED` | `true` | 외부 메타데이터 기능 사용 |
 | `FILENAME_TAGS` | `true` | 파일명 태그 추출 사용 |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `20` / `60` | 동시 요청이 매우 많을 때만 조정 (기본값으로 충분) |
 | `SCAN_WORKERS` | (자동) | 스캔 병렬 스레드 수. 미지정이면 CPU 코어 수 기반 자동. NAS 부하를 낮추려면 `2` 등으로 지정 |
 
 ---
@@ -313,6 +314,7 @@ PDF·EPUB 뷰어는 `pdf.js`·`epub.js`·`jszip` 를 **jsDelivr CDN** 에서 불
 - **로그인이 유지되지 않아요** → 접속 방식과 `COOKIE_SECURE` 불일치. `http://IP` 접속이면 `false`, `https://도메인` 접속이면 `true`.
 - **라이브러리가 비어 있어요** → `volumes` 의 컨테이너 경로와 `SEED_LIBRARIES` 경로가 다르거나, 실제 NAS 경로 오타. 스캔 상태의 오류 메시지 확인.
 - **성인 폴더가 일반 사용자에게 보여요** → 라이브러리 **수정 → 제한** 켜기.
+- **`QueuePool limit ... connection timed out` 오류** → 표지·페이지 이미지를 동시에 많이 받을 때 DB 연결이 부족해 생기던 문제로, 1.1 이후 연결을 먼저 반납하고 풀을 넉넉히 잡도록 수정되었습니다. 그래도 나면 `DB_POOL_SIZE` 를 늘려 보세요.
 - **업데이트가 반영 안 돼요** → 4장의 GitOps **Force redeployment** 켜기 또는 수동 **Pull and redeploy**, 그리고 브라우저 새로고침.
 - **표지가 안 나오는 EPUB** → 개별 책에서 **메타 새로고침**, 또는 **메타데이터 찾기**로 표지 교체.
 - **검색에서 태그로 찾기** → 검색 탭 상단의 태그 칩을 누르면 해당 태그의 시리즈·책을 바로 볼 수 있습니다(검색어와 함께 사용 가능).

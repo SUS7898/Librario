@@ -491,6 +491,7 @@ def book_thumbnail(book_id: int, user: User = Depends(security.get_current_user)
     p = thumbnails.book_thumb_path(book.id)
     if not p.exists():
         return Response(status_code=404)
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return FileResponse(str(p), media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 
@@ -504,6 +505,7 @@ def series_thumbnail(series_id: int, user: User = Depends(security.get_current_u
         thumbnails.link_series_thumbnail(s.id, s.cover_book_id)
     if not p.exists():
         return Response(status_code=404)
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return FileResponse(str(p), media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 
@@ -574,6 +576,7 @@ def book_epub_thumb(book_id: int, href: str = Query(...),
                 return Response(content=got[0], media_type=got[1])
         else:
             return Response(content=got[0], media_type=got[1])
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return FileResponse(p, media_type="image/jpeg",
                         headers={"Cache-Control": "private, max-age=604800"})
 
@@ -587,10 +590,13 @@ def book_epub_asset(book_id: int, href: str = Query(...),
     book = _require_book(db, user, book_id)
     if book.fmt != "epub":
         raise HTTPException(status_code=400, detail="EPUB 이 아닙니다.")
-    got = epub_asset_bytes(book.path, href)
+    book_path = book.path
+    db.close()  # zip 읽기/전송 동안 연결 반납
+    got = epub_asset_bytes(book_path, href)
     if not got:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
     data, ctype = got
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return Response(content=data, media_type=ctype,
                     headers={"Cache-Control": "private, max-age=86400"})
 

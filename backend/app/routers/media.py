@@ -25,7 +25,9 @@ def comic_page(book_id: int, index: int,
     book = _require_book(db, user, book_id)
     if book.fmt not in ("cbz", "zip"):
         raise HTTPException(status_code=400, detail="이미지 페이지가 없는 형식입니다.")
-    res = formats.read_comic_page(book.path, index)
+    book_path = book.path
+    db.close()  # 압축 해제/전송 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
+    res = formats.read_comic_page(book_path, index)
     if res is None:
         raise HTTPException(status_code=404, detail="페이지를 찾을 수 없습니다.")
     data, ctype = res
@@ -51,6 +53,7 @@ def raw_file(book_id: int, user: User = Depends(security.get_current_user),
         raise HTTPException(status_code=404, detail="파일이 존재하지 않습니다.")
     media = _FILE_MIME.get(book.fmt, "application/octet-stream")
     filename = os.path.basename(book.path)
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return FileResponse(
         book.path, media_type=media, filename=filename,
         headers={"Cache-Control": "private, max-age=3600",
@@ -65,7 +68,9 @@ def text_content(book_id: int, user: User = Depends(security.get_current_user),
     book = _require_book(db, user, book_id)
     if book.fmt != "txt":
         raise HTTPException(status_code=400, detail="텍스트 형식이 아닙니다.")
-    text = formats.read_text_file(book.path)
+    book_path = book.path
+    db.close()
+    text = formats.read_text_file(book_path)
     return PlainTextResponse(text, headers={"Cache-Control": "private, max-age=3600"})
 
 
@@ -75,5 +80,6 @@ def download(book_id: int, user: User = Depends(security.get_current_user),
     book = _require_book(db, user, book_id)
     if not os.path.exists(book.path):
         raise HTTPException(status_code=404, detail="파일이 존재하지 않습니다.")
+    db.close()  # 스트리밍 동안 DB 연결을 붙잡지 않도록 먼저 반납 (풀 고갈 방지)
     return FileResponse(book.path, filename=os.path.basename(book.path),
                         media_type="application/octet-stream")

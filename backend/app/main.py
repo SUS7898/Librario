@@ -55,7 +55,9 @@ def apply_read_threads(n: int) -> int:
         import anyio.to_thread
         limiter = anyio.to_thread.current_default_thread_limiter()
         if n and n > 0:
-            limiter.total_tokens = max(4, min(128, int(n)))
+            # 읽기 스레드가 DB 커넥션 풀보다 많으면 풀이 고갈된다 → 상한을 맞춤
+            cap = config.DB_POOL_SIZE + config.DB_MAX_OVERFLOW - 5
+            limiter.total_tokens = max(4, min(cap, int(n)))
         return int(limiter.total_tokens)
     except Exception:
         return 0
