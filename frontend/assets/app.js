@@ -1431,6 +1431,10 @@ async function adminScanSettings(body){
   // ---- 태그 규칙 ----
   const trOn=h('input',{type:'checkbox',...(tr.enabled!==false?{checked:'checked'}:{})});
   const brOn=h('input',{type:'checkbox',...(tr.bracket_tags!==false?{checked:'checked'}:{})});
+  const authOn=h('input',{type:'checkbox',...(tr.author_marker!==false?{checked:'checked'}:{})});
+  const rangeOn=h('input',{type:'checkbox',...(tr.chapter_range!==false?{checked:'checked'}:{})});
+  const rangeTagOn=h('input',{type:'checkbox',...(tr.chapter_range_tag?{checked:'checked'}:{})});
+  const cleanOn=h('input',{type:'checkbox',...(tr.clean_title!==false?{checked:'checked'}:{})});
   const kwArea=h('textarea',{class:'input',rows:'5',style:{fontFamily:'monospace',fontSize:'12px'},
     placeholder:'완결=완결\nBL=BL'}, );
   kwArea.value = (tr.keywords||[]).map(k=>`${k.match}=${k.tag||k.match}`).join('\n');
@@ -1448,7 +1452,8 @@ async function adminScanSettings(body){
       if(rhs.startsWith('group:')) return {pattern:pat, group:parseInt(rhs.slice(6))||1};
       return {pattern:pat, tag:rhs};
     });
-    try{ await api('/api/scan/tag-rules',{method:'PUT',body:{enabled:trOn.checked,bracket_tags:brOn.checked,keywords,regex}});
+    try{ await api('/api/scan/tag-rules',{method:'PUT',body:{enabled:trOn.checked,bracket_tags:brOn.checked,author_marker:authOn.checked,
+        chapter_range:rangeOn.checked,chapter_range_tag:rangeTagOn.checked,clean_title:cleanOn.checked,keywords,regex}});
       toast('태그 규칙 저장됨 (다음 스캔부터 적용)'); }catch(e){ toast(e.message); } ev.target.disabled=false;
   };
 
@@ -1458,6 +1463,10 @@ async function adminScanSettings(body){
     h('div',{class:'card-box'},
       h('label',{class:'sched-row'}, trOn, h('span',{},'파일명 태그 사용')),
       h('label',{class:'sched-row'}, brOn, h('span',{},'대괄호 [내용] 을 태그로 추출')),
+      h('label',{class:'sched-row'}, authOn, h('span',{},'"@작가" 를 작가명으로 인식 (예: 제목 @릿테)')),
+      h('label',{class:'sched-row'}, rangeOn, h('span',{},'"1-99" 을 화수 범위로 인식 (제목에서 분리)')),
+      h('label',{class:'sched-row'}, rangeTagOn, h('span',{},'화수 범위를 태그로도 남기기 (1-99화·연재분)')),
+      h('label',{class:'sched-row'}, cleanOn, h('span',{},'인식한 부분을 제목에서 제거')),
       h('div',{style:{marginTop:'8px'}}, h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'키워드 규칙 (형식: 파일명포함어=태그)'), kwArea),
       h('div',{style:{marginTop:'8px'}}, h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'정규식 규칙 (형식: 패턴 => 태그  또는  패턴 => group:1)'), rxArea),
       h('div',{style:{marginTop:'10px'}}, h('button',{class:'btn primary',onclick:saveRules},'태그 규칙 저장'))

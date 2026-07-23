@@ -77,6 +77,10 @@ class TagRulesIn(BaseModel):
     bracket_tags: Optional[bool] = None
     keywords: Optional[List[dict]] = None  # [{"match":..,"tag":..}]
     regex: Optional[List[dict]] = None     # [{"pattern":..,"tag":..,"group":..}]
+    author_marker: Optional[bool] = None
+    chapter_range: Optional[bool] = None
+    chapter_range_tag: Optional[bool] = None
+    clean_title: Optional[bool] = None
 
 
 class MetadataApplyIn(BaseModel):

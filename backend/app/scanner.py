@@ -226,6 +226,55 @@ def _get_or_create_series(db: Session, lib: Library, file_path: str,
 _NUMERIC_BRACKET = re.compile(r"^[\d\s\.\-~vV권화회話巻卷]+$")
 
 
+
+# ---------------------------------------------------------------------------
+# 파일명 규칙 파싱: "제목 1-99 @작가" 형태에서 작가/화수범위/깨끗한 제목을 뽑는다.
+#   예) "내 마법도서관이 살아있다 1-99 @릿테"
+#        → title="내 마법도서관이 살아있다", author="릿테", 1~99화
+# ---------------------------------------------------------------------------
+_AUTHOR_RE = re.compile(r"[@＠]\s*([^@＠\[\]()]+?)\s*$")
+_RANGE_RE = re.compile(r"(?<![\d.])(\d{1,5})\s*[-~–]\s*(\d{1,5})\s*(?:화|권|장|회)?(?![\d.])")
+
+
+def parse_filename_pattern(stem: str, rules: dict) -> Dict[str, object]:
+    """파일명에서 작가/화수범위를 추출하고 그 부분을 뺀 제목을 돌려준다."""
+    out: Dict[str, object] = {"author": None, "first": None, "last": None,
+                              "title": stem, "tags": []}
+    if not rules or not rules.get("enabled", True):
+        return out
+    work = stem
+    tags: List[str] = []
+
+    # 1) @작가  (파일명 끝쪽)
+    if rules.get("author_marker", True):
+        m = _AUTHOR_RE.search(work)
+        if m:
+            name = m.group(1).strip(" _-.")
+            if name and len(name) <= 40:
+                out["author"] = name
+                tags.append(name)
+                work = work[:m.start()].strip()
+
+    # 2) 숫자-숫자 (화수 범위)
+    if rules.get("chapter_range", True):
+        m = _RANGE_RE.search(work)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if 0 < a <= b and b <= 99999:
+                out["first"], out["last"] = a, b
+                # 태그는 기본적으로 만들지 않는다 (제목 정리 용도)
+                if rules.get("chapter_range_tag", False):
+                    tags.append(f"{a}-{b}화")
+                    tags.append("연재분")
+                work = (work[:m.start()] + " " + work[m.end():]).strip()
+
+    work = re.sub(r"\s{2,}", " ", work).strip(" _-·,")
+    if work:
+        out["title"] = work
+    out["tags"] = tags
+    return out
+
+
 def extract_filename_tags(stem: str, rules: dict) -> List[str]:
     if not rules or not rules.get("enabled", True):
         return []
@@ -268,10 +317,13 @@ def extract_filename_tags(stem: str, rules: dict) -> List[str]:
 # ---------------------------------------------------------------------------
 # 파일 메타데이터 추출
 # ---------------------------------------------------------------------------
-def _extract_meta(file_path: str, fmt: str) -> Dict[str, object]:
+def _extract_meta(file_path: str, fmt: str, rules: dict = None) -> Dict[str, object]:
     """파일에서 제목/작가/출판사/언어/설명/권번호/추가태그/페이지수를 추출."""
     stem = os.path.splitext(os.path.basename(file_path))[0]
-    title_clean, title_completed = clean_text(stem)
+    # 파일명 규칙("제목 1-99 @작가") 해석
+    fp = parse_filename_pattern(stem, rules or {"enabled": True})
+    base_stem = fp["title"] if (rules or {}).get("clean_title", True) else stem
+    title_clean, title_completed = clean_text(base_stem)
     meta: Dict[str, object] = {
         "title": title_clean or stem,
         "author": None,
@@ -310,6 +362,13 @@ def _extract_meta(file_path: str, fmt: str) -> Dict[str, object]:
         pc = formats.pdf_page_count(file_path)
         if pc:
             meta["page_count"] = pc
+
+    # 파일명에서 얻은 정보 반영 (임베드 메타데이터가 우선)
+    if not meta["author"] and fp.get("author"):
+        meta["author"] = fp["author"]
+    extra_tags += list(fp.get("tags") or [])
+    if fp.get("last"):
+        meta["chapter_last"] = fp["last"]
 
     if title_completed:
         extra_tags.append("완결")
@@ -436,7 +495,7 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
         fpath, fn, mtime, size, fmt, need_thumb, need_epub = entry
         out: Dict[str, object] = {}
         try:
-            out["meta"] = _extract_meta(fpath, fmt)
+            out["meta"] = _extract_meta(fpath, fmt, rules)
         except Exception:
             return fpath, None
         try:
@@ -699,7 +758,7 @@ def refresh_book(db: Session, book: Book, regen_thumb: bool = True) -> bool:
         st = os.stat(book.path)
     except OSError:
         return False
-    meta = _extract_meta(book.path, fmt)
+    meta = _extract_meta(book.path, fmt, rules)
     all_auto = _auto_tags_for(book.path, book.library.path, fmt, meta, rules)
     _write_book_fields(book, meta, st.st_size, int(st.st_mtime))
     db.flush()
