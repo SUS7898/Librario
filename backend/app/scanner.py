@@ -351,6 +351,7 @@ def _extract_meta(file_path: str, fmt: str, rules: dict = None) -> Dict[str, obj
     stem = os.path.splitext(os.path.basename(file_path))[0]
     # 파일명 규칙("제목 1-99 @작가") 해석
     fp = parse_filename_pattern(stem, rules or {"enabled": True})
+    title_src = (rules or {}).get("title_source", "auto")
     base_stem = fp["title"] if (rules or {}).get("clean_title", True) else stem
     title_clean, title_completed = clean_text(base_stem)
     meta: Dict[str, object] = {
@@ -369,7 +370,8 @@ def _extract_meta(file_path: str, fmt: str, rules: dict = None) -> Dict[str, obj
         ci = formats.read_comicinfo(file_path)
         if ci.get("Title"):
             t, _ = clean_text(ci["Title"])
-            meta["title"] = t or meta["title"]
+            if title_src != "filename":
+                meta["title"] = t or meta["title"]
         meta["author"] = ci.get("Writer") or ci.get("Penciller") or None
         meta["publisher"] = ci.get("Publisher") or None
         meta["language"] = ci.get("LanguageISO") or None
@@ -381,7 +383,7 @@ def _extract_meta(file_path: str, fmt: str, rules: dict = None) -> Dict[str, obj
         meta["page_count"] = pc if pc > 0 else -1
     elif fmt == "epub":
         info = formats.epub_info(file_path)
-        if info.get("title"):
+        if info.get("title") and title_src != "filename":
             meta["title"] = str(info["title"]).strip() or meta["title"]
         meta["author"] = (info.get("author") or None)
         meta["publisher"] = (info.get("publisher") or None)
@@ -970,3 +972,47 @@ def _ensure_worker():
         return
     _worker = threading.Thread(target=_worker_loop, daemon=True)
     _worker.start()
+
+
+def reapply_metadata(db: Session, lib: Library) -> Dict[str, int]:
+    """파일을 다시 읽지 않고 경로·파일명 규칙만으로 태그와 시리즈를 재계산한다.
+    태그 규칙(제외 폴더 등)을 바꾼 뒤 빠르게 반영할 때 사용."""
+    rules = settings_store.get_tag_rules(db)
+    roots = library_roots(lib)
+    series_cache: Dict[str, Series] = {}
+    tag_cache: Dict[str, Tag] = {}
+    touched: Set[int] = set()
+    changed = 0
+    books = db.scalars(select(Book).where(
+        Book.library_id == lib.id, Book.status == "active")).all()
+    for bk in books:
+        root = next((r for r in roots if bk.path.startswith(r.rstrip("/") + os.sep)), lib.path)
+        try:
+            meta = _extract_meta(bk.path, bk.fmt, rules) if os.path.exists(bk.path) else None
+        except Exception:
+            meta = None
+        if meta is None:
+            # 파일이 없으면 경로 기반 태그만 다시 계산
+            excl = set(rules.get("exclude_folders") or [])
+            auto, _ = extract_path_tags(bk.path, root, excl)
+        else:
+            auto = _auto_tags_for(bk.path, root, bk.fmt, meta, rules)
+            if meta.get("title"):
+                bk.title = meta["title"]
+                bk.sort_title = str(meta["title"]).lower()
+                _fill_chosung(bk)
+            if meta.get("author"):
+                bk.author = meta["author"]
+        _apply_auto_tags(db, bk, auto, tag_cache)
+        s = _get_or_create_series(db, lib, bk.path, series_cache, root)
+        if bk.series_id != s.id:
+            bk.series_id = s.id
+        touched.add(bk.series_id)
+        changed += 1
+    db.commit()
+    try:
+        _recompute_series(db, lib, touched)
+        db.commit()
+    except Exception:
+        db.rollback()
+    return {"books": changed, "series": len(touched)}

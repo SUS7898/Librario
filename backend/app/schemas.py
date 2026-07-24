@@ -86,6 +86,7 @@ class TagRulesIn(BaseModel):
     chapter_range_tag: Optional[bool] = None
     clean_title: Optional[bool] = None
     exclude_folders: Optional[List[str]] = None
+    title_source: Optional[str] = None
 
 
 class MetadataApplyIn(BaseModel):

@@ -226,3 +226,16 @@ def cancel_queued(library_id: int, _: User = Depends(security.require_admin)):
 def clear_queued(_: User = Depends(security.require_admin)):
     n = scanner.clear_queue()
     return {"ok": True, "removed": n, "queue": scanner.queue_status()}
+
+
+@router.post("/{library_id}/reapply")
+def reapply_library(library_id: int, _: User = Depends(security.require_admin),
+                    db: Session = Depends(get_db)):
+    """태그 규칙·제목 설정을 기존 책들에 다시 적용 (파일 재읽기 최소화)."""
+    lib = db.get(Library, library_id)
+    if not lib:
+        raise HTTPException(status_code=404, detail="라이브러리를 찾을 수 없습니다.")
+    if scanner.scan_status.get("running"):
+        raise HTTPException(status_code=409, detail="스캔 중에는 실행할 수 없습니다.")
+    r = scanner.reapply_metadata(db, lib)
+    return {"ok": True, **r, "message": f"{r['books']}권 재적용 완료"}

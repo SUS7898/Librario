@@ -568,7 +568,8 @@ async function viewLibrary(view){
   clear(view);
   // 필터바
   const libSel = h('select',{class:'input',style:{width:'auto',minWidth:'120px'},onchange:e=>{
-    libState.library = e.target.value?+e.target.value:null; loadGrid();
+    libState.library = e.target.value?+e.target.value:null;
+    libState.tag = null; loadChips(); loadGrid();
   }},
     h('option',{value:''},'모든 라이브러리'),
     ...state.libraries.map(l=>h('option',{value:l.id, selected:libState.library===l.id}, l.name + (l.restricted?' 🔒':'')))
@@ -596,17 +597,21 @@ async function viewLibrary(view){
     seg.children[1].className = libState.mode==='books'?'on':'';
   }
 
-  // 태그 칩
-  try{
-    const t = await api('/api/tags'+(libState.library?('?library='+libState.library):''));
-    clear(chipsWrap);
-    chipsWrap.append(h('span',{class:'chip'+(libState.tag===null?' active':''), onclick:()=>{libState.tag=null;refreshChips();loadGrid();}},'전체'));
-    t.tags.slice(0,40).forEach(tag=>{
-      chipsWrap.append(h('span',{class:'chip'+(libState.tag===tag.name?' active':''), onclick:()=>{
-        libState.tag = libState.tag===tag.name?null:tag.name; refreshChips(); loadGrid();
-      }}, tag.name, h('span',{class:'muted',style:{fontSize:'11px'}}, ' '+tag.count)));
-    });
-  }catch(e){}
+  // 태그 칩 — 현재 선택한 라이브러리의 태그만 표시
+  async function loadChips(){
+    try{
+      const t = await api('/api/tags'+(libState.library?('?library='+libState.library):''));
+      clear(chipsWrap);
+      chipsWrap.append(h('span',{class:'chip'+(libState.tag===null?' active':''), onclick:()=>{libState.tag=null;refreshChips();loadGrid();}},'전체'));
+      (t.tags||[]).slice(0,60).forEach(tag=>{
+        chipsWrap.append(h('span',{class:'chip'+(libState.tag===tag.name?' active':''), onclick:()=>{
+          libState.tag = libState.tag===tag.name?null:tag.name; refreshChips(); loadGrid();
+        }}, tag.name, h('span',{class:'muted',style:{fontSize:'11px'}}, ' '+tag.count)));
+      });
+      if(!(t.tags||[]).length) chipsWrap.append(h('span',{class:'muted',style:{fontSize:'12.5px',padding:'4px'}},'이 라이브러리에는 태그가 없습니다.'));
+    }catch(e){}
+  }
+  await loadChips();
   function refreshChips(){
     [...chipsWrap.children].forEach(c=>{
       const name = c.firstChild ? c.textContent.replace(/\s\d+$/,'').trim() : '';
@@ -1139,8 +1144,42 @@ async function adminLibraries(body){
     persistOrder();
   }
   let dragEl = null;
+  // 모바일(터치)에서는 HTML5 드래그가 동작하지 않아 포인터 이벤트로 직접 처리한다
+  function enableTouchDrag(card, handle){
+    let startY=0, moved=false, holdTimer=null, active=false;
+    const begin = ()=>{
+      active=true; dragEl=card; card.classList.add('dragging');
+      try{ navigator.vibrate && navigator.vibrate(15); }catch(e){}
+    };
+    handle.addEventListener('pointerdown', e=>{
+      if(e.pointerType==='mouse') return;         // 마우스는 기본 드래그 사용
+      startY=e.clientY; moved=false;
+      handle.setPointerCapture(e.pointerId);
+      holdTimer=setTimeout(begin, 180);            // 살짝 누르면 바로 잡힘
+    });
+    handle.addEventListener('pointermove', e=>{
+      if(!active){
+        if(Math.abs(e.clientY-startY)>10){ clearTimeout(holdTimer); }
+        return;
+      }
+      e.preventDefault(); moved=true;
+      const el=document.elementFromPoint(e.clientX, e.clientY);
+      const t=el && el.closest ? el.closest('.list-card') : null;
+      if(t && t!==dragEl && t.parentElement===listWrap){
+        const r=t.getBoundingClientRect();
+        const after=(e.clientY-r.top) > r.height/2;
+        listWrap.insertBefore(dragEl, after ? t.nextSibling : t);
+      }
+    });
+    const end = ()=>{
+      clearTimeout(holdTimer);
+      if(active){ card.classList.remove('dragging'); dragEl=null; active=false; if(moved) persistOrder(); }
+    };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
   libs.forEach((l, idx)=>{
-    listWrap.append(h('div',{class:'list-card', draggable:'true', dataset:{libid:String(l.id)},
+    const card = h('div',{class:'list-card', draggable:'true', dataset:{libid:String(l.id)},
       ondragstart:e=>{ dragEl=e.currentTarget; e.currentTarget.classList.add('dragging');
                        e.dataTransfer.effectAllowed='move'; },
       ondragend:e=>{ e.currentTarget.classList.remove('dragging'); dragEl=null; persistOrder(); },
@@ -1169,8 +1208,17 @@ async function adminLibraries(body){
       h('button',{class:'btn sm danger',onclick:async()=>{
         if(!confirm(`'${l.name}' 라이브러리를 삭제할까요? (파일은 삭제되지 않습니다)`))return;
         await api('/api/libraries/'+l.id,{method:'DELETE'}); await loadLibraries(); adminLibraries(body);
-      }},'삭제')
-    ));
+      }},'삭제'),
+      h('button',{class:'btn sm',title:'태그·제목 규칙을 기존 책에 다시 적용',onclick:async(e)=>{
+        e.target.disabled=true; e.target.textContent='재적용 중…';
+        try{ const r=await api('/api/libraries/'+l.id+'/reapply',{method:'POST'}); toast(r.message); }
+        catch(err){ toast(err.message); }
+        e.target.disabled=false; e.target.textContent='재적용';
+      }},'재적용')
+    );
+    listWrap.append(card);
+    const hnd = card.querySelector('.drag-handle');
+    if(hnd) enableTouchDrag(card, hnd);
   });
 
   clear(body).append(
@@ -1614,6 +1662,10 @@ async function adminScanSettings(body){
   const rangeOn=h('input',{type:'checkbox',...(tr.chapter_range!==false?{checked:'checked'}:{})});
   const rangeTagOn=h('input',{type:'checkbox',...(tr.chapter_range_tag?{checked:'checked'}:{})});
   const cleanOn=h('input',{type:'checkbox',...(tr.clean_title!==false?{checked:'checked'}:{})});
+  const titleSrc=h('select',{class:'input',style:{width:'auto'}},
+    h('option',{value:'auto',   selected:(tr.title_source||'auto')==='auto'},'자동 (내부 제목 우선)'),
+    h('option',{value:'filename',selected:tr.title_source==='filename'},'파일명 우선'),
+    h('option',{value:'embedded',selected:tr.title_source==='embedded'},'내부 제목만'));
   const exclIn=h('input',{class:'input',placeholder:'보관소, 자료실'});
   exclIn.value=(tr.exclude_folders||[]).join(', ');
   const kwArea=h('textarea',{class:'input',rows:'5',style:{fontFamily:'monospace',fontSize:'12px'},
@@ -1635,7 +1687,8 @@ async function adminScanSettings(body){
     });
     try{ await api('/api/scan/tag-rules',{method:'PUT',body:{enabled:trOn.checked,bracket_tags:brOn.checked,author_marker:authOn.checked,
         chapter_range:rangeOn.checked,chapter_range_tag:rangeTagOn.checked,clean_title:cleanOn.checked,
-        exclude_folders:exclIn.value.split(',').map(x=>x.trim()).filter(Boolean),keywords,regex}});
+        exclude_folders:exclIn.value.split(',').map(x=>x.trim()).filter(Boolean),
+        title_source:titleSrc.value,keywords,regex}});
       toast('태그 규칙 저장됨 (다음 스캔부터 적용)'); }catch(e){ toast(e.message); } ev.target.disabled=false;
   };
 
@@ -1649,7 +1702,12 @@ async function adminScanSettings(body){
       h('label',{class:'sched-row'}, rangeOn, h('span',{},'"1-99" 을 화수 범위로 인식 (제목에서 분리)')),
       h('label',{class:'sched-row'}, rangeTagOn, h('span',{},'화수 범위를 태그로도 남기기 (1-99화·연재분)')),
       h('label',{class:'sched-row'}, cleanOn, h('span',{},'인식한 부분을 제목에서 제거')),
-      h('div',{style:{marginTop:'8px'}},
+      h('div',{style:{marginTop:'10px'}},
+        h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'제목 출처'),
+        titleSrc,
+        h('p',{class:'muted',style:{fontSize:'11.5px',margin:'4px 0 0'}},
+          'EPUB·ComicInfo 내부 제목이 권마다 다르게 적혀 순서가 뒤죽박죽이면 "파일명 우선"을 고르세요.')),
+      h('div',{style:{marginTop:'10px'}},
         h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},
           '태그로 만들지 않을 폴더 이름 (쉼표로 구분 · 예: 보관소, 자료실)'), exclIn),
       h('div',{style:{marginTop:'8px'}}, h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'키워드 규칙 (형식: 파일명포함어=태그)'), kwArea),
