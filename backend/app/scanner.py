@@ -66,7 +66,30 @@ def clean_text(s: str) -> Tuple[str, bool]:
     return s, is_completed
 
 
-def extract_path_tags(file_path: str, root_dir: str) -> Tuple[List[str], bool]:
+def library_roots(lib: Library) -> List[str]:
+    """기본 경로 + 추가 경로 목록. 존재하는 폴더만."""
+    roots = []
+    if lib.path and os.path.isdir(lib.path):
+        roots.append(lib.path)
+    try:
+        extra = json.loads(lib.extra_paths) if lib.extra_paths else []
+    except Exception:
+        extra = []
+    for p in extra or []:
+        p = str(p).strip().rstrip("/")
+        if p and os.path.isdir(p) and p not in roots:
+            roots.append(p)
+    return roots
+
+
+def library_settings(lib: Library) -> dict:
+    try:
+        return json.loads(lib.settings) if lib.settings else {}
+    except Exception:
+        return {}
+
+
+def extract_path_tags(file_path: str, root_dir: str, exclude: Set[str] = None) -> Tuple[List[str], bool]:
     """조상 폴더(장르)에서 태그 추출. 바로 위 폴더(시리즈명)는 제외."""
     rel = os.path.relpath(os.path.dirname(file_path), root_dir)
     tags: Set[str] = set()
@@ -74,6 +97,7 @@ def extract_path_tags(file_path: str, root_dir: str) -> Tuple[List[str], bool]:
     if rel in (".", ""):
         return [], False
     parts = rel.replace("\\", "/").split("/")
+    exclude = {str(x).strip().lower() for x in (exclude or set()) if str(x).strip()}
     for p in parts:
         _, comp = clean_text(p)
         if comp:
@@ -84,9 +108,12 @@ def extract_path_tags(file_path: str, root_dir: str) -> Tuple[List[str], bool]:
         cp, _ = clean_text(p)
         if not cp or cp.lower() in IGNORE_FOLDER_NAMES:
             continue
+        # 사용자가 지정한 제외 폴더(예: '보관소')는 태그로 만들지 않는다
+        if cp.lower() in exclude or str(p).strip().lower() in exclude:
+            continue
         if SPLIT_SPACE_IN_TAGS:
             for sub in cp.split():
-                if sub and sub.lower() not in IGNORE_FOLDER_NAMES:
+                if sub and sub.lower() not in IGNORE_FOLDER_NAMES and sub.lower() not in exclude:
                     tags.add(sub)
         else:
             tags.add(cp)
@@ -202,8 +229,8 @@ def _series_name_for(file_path: str, root_dir: str) -> Tuple[str, str]:
 
 
 def _get_or_create_series(db: Session, lib: Library, file_path: str,
-                          series_cache: Dict[str, Series]) -> Series:
-    name, folder = _series_name_for(file_path, lib.path)
+                          series_cache: Dict[str, Series], root: str = None) -> Series:
+    name, folder = _series_name_for(file_path, root or lib.path)
     if folder in series_cache:
         return series_cache[folder]
     s = db.scalar(select(Series).where(Series.path == folder))
@@ -381,7 +408,8 @@ def _extract_meta(file_path: str, fmt: str, rules: dict = None) -> Dict[str, obj
 def _auto_tags_for(file_path: str, lib_path: str, fmt: str,
                    meta: Dict[str, object], rules: dict) -> List[str]:
     stem = os.path.splitext(os.path.basename(file_path))[0]
-    path_tags, path_completed = extract_path_tags(file_path, lib_path)
+    excl = set((rules or {}).get("exclude_folders") or [])
+    path_tags, path_completed = extract_path_tags(file_path, lib_path, excl)
     auto: Set[str] = set(path_tags) | set(meta.get("extra_tags") or [])
     if path_completed:
         auto.add("완결")
@@ -467,7 +495,10 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
     # --- 1단계: 파일 목록 수집 (가벼움). 처리 대상만 todo 에 모은다 ---
     todo: List[Tuple[str, str, int, int, str, bool, bool]] = []
     # (fpath, fn, mtime, size, fmt, need_thumb, need_epub)
-    for base, dirs, files in os.walk(lib.path):
+    roots = library_roots(lib)
+    root_of: Dict[str, str] = {}   # 파일 → 소속 루트 (시리즈명·태그 계산 기준)
+    for _root in roots:
+      for base, dirs, files in os.walk(_root):
         _check_cancel()  # 취소 요청 시 여기서 중단 → 아래 '사라진 파일' 정리(휴지통) 단계로 가지 않음
         dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() != "__macosx"]
         for fn in files:
@@ -477,6 +508,7 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
                 continue
             fpath = os.path.join(base, fn)
             seen_paths.add(fpath)
+            root_of[fpath] = _root
             try:
                 st = os.stat(fpath)
             except OSError:
@@ -509,7 +541,7 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
         except Exception:
             return fpath, None
         try:
-            out["tags"] = _auto_tags_for(fpath, lib.path, fmt, out["meta"], rules)
+            out["tags"] = _auto_tags_for(fpath, root_of.get(fpath, lib.path), fmt, out["meta"], rules)
         except Exception:
             out["tags"] = []
         if need_thumb and opts.get("thumbnails", True):
@@ -567,7 +599,7 @@ def _scan_library_inner(db: Session, lib: Library, deep: bool = False):
             meta = pre["meta"]
             all_auto = pre.get("tags") or []
             prior = existing.get(fpath)
-            series = _get_or_create_series(db, lib, fpath, series_cache)
+            series = _get_or_create_series(db, lib, fpath, series_cache, root_of.get(fpath))
             try:
 
                 book = None
@@ -855,3 +887,86 @@ def scan_all_async(deep: bool = False):
     _cancel_event.clear()
     threading.Thread(target=scan_all, kwargs={"deep": deep}, daemon=True).start()
     return True
+
+
+# ---------------------------------------------------------------------------
+# 스캔 대기열 — 이미 스캔 중이어도 다른 라이브러리를 예약해 둘 수 있다.
+#   순서 변경 / 개별 취소 / 전체 비우기 지원
+# ---------------------------------------------------------------------------
+_queue: List[Dict[str, object]] = []
+_queue_lock = threading.Lock()
+_worker: threading.Thread = None
+
+
+def queue_status() -> List[Dict[str, object]]:
+    with _queue_lock:
+        return [dict(x) for x in _queue]
+
+
+def enqueue_scan(library_id: int, name: str, deep: bool = False) -> bool:
+    """대기열에 추가. 같은 라이브러리가 이미 대기 중이면 무시."""
+    with _queue_lock:
+        if any(int(x["library_id"]) == int(library_id) and bool(x["deep"]) == bool(deep)
+               for x in _queue):
+            return False
+        _queue.append({"library_id": int(library_id), "name": name,
+                       "deep": bool(deep), "queued_at": utcnow().isoformat()})
+    _ensure_worker()
+    return True
+
+
+def dequeue_scan(library_id: int, deep: bool = None) -> int:
+    """대기열에서 제거(취소). 실행 중인 항목은 영향 없음."""
+    removed = 0
+    with _queue_lock:
+        keep = []
+        for x in _queue:
+            match = int(x["library_id"]) == int(library_id) and (deep is None or bool(x["deep"]) == bool(deep))
+            if match:
+                removed += 1
+            else:
+                keep.append(x)
+        _queue[:] = keep
+    return removed
+
+
+def clear_queue() -> int:
+    with _queue_lock:
+        n = len(_queue)
+        _queue.clear()
+    return n
+
+
+def reorder_queue(order: List[int]) -> List[Dict[str, object]]:
+    """library_id 순서대로 대기열을 재정렬."""
+    with _queue_lock:
+        by_id = {}
+        for x in _queue:
+            by_id.setdefault(int(x["library_id"]), []).append(x)
+        newq = []
+        for lid in order:
+            newq.extend(by_id.pop(int(lid), []))
+        for rest in by_id.values():
+            newq.extend(rest)
+        _queue[:] = newq
+        return [dict(x) for x in _queue]
+
+
+def _worker_loop():
+    while True:
+        with _queue_lock:
+            if not _queue:
+                break
+            job = _queue.pop(0)
+        try:
+            scan_library(int(job["library_id"]), deep=bool(job["deep"]))
+        except Exception as e:  # noqa
+            scan_status["error"] = str(e)
+
+
+def _ensure_worker():
+    global _worker
+    if _worker is not None and _worker.is_alive():
+        return
+    _worker = threading.Thread(target=_worker_loop, daemon=True)
+    _worker.start()

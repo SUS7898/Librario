@@ -48,6 +48,10 @@ class Library(Base):
     path = Column(String(1024), unique=True, nullable=False)
     # restricted=True 이면 명시적으로 권한 부여받은 사용자(+관리자)만 접근 가능 (예: 성인물)
     restricted = Column(Boolean, nullable=False, default=False)
+    # 추가 경로 목록(JSON 배열). 기본 path 와 함께 스캔된다.
+    extra_paths = Column(Text)
+    # 라이브러리별 설정(JSON): 예약 스캔·스캔 옵션 재정의
+    settings = Column(Text)
     # True 면 성인물 여부와 무관하게 '권한 부여받은 사용자 + 관리자' 만 접근
     private = Column(Boolean, nullable=False, default=False)
     # 사용자가 지정한 표시 순서 (작을수록 앞)

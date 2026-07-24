@@ -259,6 +259,8 @@ function renderNav(){
 
 let adminScanTimer = null;
 let homeScanTimer = null;
+const scrollMemory = {};   // 해시별 스크롤 위치
+let lastHash = '';
 async function route(){
   if(!state.user) return;
   if(adminScanTimer){ clearInterval(adminScanTimer); adminScanTimer=null; }
@@ -268,8 +270,12 @@ async function route(){
   // 새 엘리먼트로 교체 → 이전 라우트의 늦게 끝난 비동기 렌더는 분리된 노드에 그려져 사라짐
   // (라이브러리 화면이 두 번 그려지던 문제 방지)
   const view = h('div',{class:'app-main',id:'view'}, h('div',{class:'spinner'}));
+  // 떠나기 전 스크롤 위치 저장 (뒤로 왔을 때 그 자리로 복원)
+  if(lastHash) scrollMemory[lastHash] = window.scrollY || 0;
   old.replaceWith(view);
   const hp = location.hash.slice(2);
+  const restoreY = scrollMemory[location.hash] || 0;
+  lastHash = location.hash;
   window.scrollTo(0,0);
   try{
     if(hp.startsWith('home')) await viewHome(view);
@@ -281,6 +287,13 @@ async function route(){
     else if(hp.startsWith('settings')) await viewSettings(view);
     else if(hp.startsWith('admin')) await viewAdmin(view);
     else await viewHome(view);
+    if(restoreY){
+      // 이미지·목록이 배치된 뒤 복원 (두 번 시도해 레이아웃 지연에 대비)
+      requestAnimationFrame(()=>{
+        window.scrollTo(0, restoreY);
+        setTimeout(()=>window.scrollTo(0, restoreY), 120);
+      });
+    }
   }catch(e){
     if(String(e.message)!=='unauthorized')
       clear(view).append(h('div',{class:'center-pad'}, '문제가 발생했습니다: '+e.message));
@@ -638,6 +651,26 @@ async function viewSearch(view){
      ...(state.libraries||[]).map(l=>h('option',{value:l.id}, l.name+(l.restricted?' 🔒':''))));
 
   let onlyFav = false, minRating = 0;
+  let pickedTags = [];                 // 다중 선택
+  let pickedFmts = [];
+  const tagFilter = h('input',{class:'input',placeholder:'태그 찾기',style:{maxWidth:'160px'}});
+  const resetBtn = h('button',{class:'btn sm',onclick:()=>{
+    pickedTags=[]; pickedFmts=[]; onlyFav=false; minRating=0; tag=null;
+    tagFilter.value=''; rateSel.value='0';
+    favChip.className='chip'; paintFmts(); loadTags(); go();
+  }},'초기화');
+  const FMTS = [['cbz','만화'],['zip','만화(zip)'],['pdf','PDF'],['epub','EPUB'],['txt','텍스트']];
+  const fmtBar = h('div',{class:'chips-scroll'});
+  function paintFmts(){
+    clear(fmtBar);
+    FMTS.forEach(([v,label])=>{
+      const on = pickedFmts.includes(v);
+      fmtBar.append(h('span',{class:'chip'+(on?' active':''),onclick:()=>{
+        pickedFmts = on ? pickedFmts.filter(x=>x!==v) : pickedFmts.concat(v);
+        paintFmts(); go();
+      }}, label));
+    });
+  }
   let onlyUnread = false;
   const unreadChip = h('span',{class:'chip', onclick:()=>{
     onlyUnread=!onlyUnread; unreadChip.className='chip'+(onlyUnread?' active':''); go();
@@ -650,13 +683,14 @@ async function viewSearch(view){
   }}, h('option',{value:'0'},'별점 전체'),
      ...[5,4,3,2,1].map(v=>h('option',{value:String(v)}, `★${v} 이상`)));
   const tagBar = h('div',{class:'chips-scroll'});
-  const tagHead = h('div',{class:'row-head',style:{margin:'2px 2px 6px'}},
-    h('h2',{style:{fontSize:'14px'}},'태그로 찾기'));
   const results = h('div',{});
   view.append(
     h('div',{class:'filterbar'}, h('div',{style:{flex:'1',minWidth:'180px'}}, input), modeSeg, libSel),
-    h('div',{class:'filterbar',style:{marginTop:'-2px'}}, favChip, unreadChip, rateSel),
-    tagHead, tagBar, results);
+    h('div',{class:'filterbar',style:{marginTop:'-2px'}}, favChip, unreadChip, rateSel, resetBtn),
+    h('div',{class:'row-head',style:{margin:'6px 2px 4px'}}, h('h2',{style:{fontSize:'14px'}},'형식')),
+    fmtBar,
+    h('div',{class:'row-head',style:{margin:'8px 2px 4px'}}, h('h2',{style:{fontSize:'14px'}},'태그'), tagFilter),
+    tagBar, results);
 
   let timer=null;
   input.addEventListener('input', ()=>{ clearTimeout(timer); timer=setTimeout(go, 300); });
@@ -667,22 +701,29 @@ async function viewSearch(view){
     try{
       const t = await api('/api/tags'+(library?('?library='+library):''));
       clear(tagBar);
-      tagBar.append(h('span',{class:'chip'+(tag===null?' active':''),onclick:()=>{tag=null;paintTags();go();}},'전체'));
-      (t.tags||[]).slice(0,60).forEach(tg=>{
-        tagBar.append(h('span',{class:'chip'+(tag===tg.name?' active':''), dataset:{tag:tg.name}, onclick:()=>{
-          tag = (tag===tg.name)?null:tg.name; paintTags(); go();
-        }}, tg.name, h('span',{class:'muted',style:{fontSize:'11px'}}, ' '+tg.count)));
-      });
+      allTags = t.tags||[];
+      drawTags();
       if(!(t.tags||[]).length) tagBar.append(h('span',{class:'muted',style:{fontSize:'12.5px',padding:'4px'}},'태그가 없습니다.'));
     }catch(e){ clear(tagBar); }
   }
-  function paintTags(){
-    [...tagBar.children].forEach(c=>{
-      const nm = c.dataset ? c.dataset.tag : null;
-      const isAll = !nm;
-      c.className = 'chip'+(((isAll&&tag===null)||(nm&&tag===nm))?' active':'');
+  let allTags = [];
+  function drawTags(){
+    const q = (tagFilter.value||'').trim().toLowerCase();
+    const sel = allTags.filter(t=>pickedTags.includes(t.name));
+    const rest = allTags.filter(t=>!pickedTags.includes(t.name) &&
+                                   (!q || t.name.toLowerCase().includes(q)));
+    clear(tagBar);
+    // 선택한 태그를 항상 앞에 고정 → 다시 찾을 필요 없음
+    sel.concat(rest.slice(0, q?200:80)).forEach(tg=>{
+      const on = pickedTags.includes(tg.name);
+      tagBar.append(h('span',{class:'chip'+(on?' active':''), onclick:()=>{
+        pickedTags = on ? pickedTags.filter(x=>x!==tg.name) : pickedTags.concat(tg.name);
+        drawTags(); go();
+      }}, (on?'✓ ':'')+tg.name, h('span',{class:'muted',style:{fontSize:'11px'}}, ' '+tg.count)));
     });
+    if(!tagBar.children.length) tagBar.append(h('span',{class:'muted',style:{fontSize:'12.5px',padding:'4px'}},'일치하는 태그가 없습니다.'));
   }
+  function paintTags(){ drawTags(); }
 
   async function go(){
     const q = input.value.trim();
@@ -696,7 +737,8 @@ async function viewSearch(view){
     clear(results).append(h('div',{class:'spinner'}));
     const p = new URLSearchParams();
     if(q) p.set('search', q);
-    if(tag) p.set('tag', tag);
+    if(pickedTags.length) p.set('tags', pickedTags.join(','));
+    if(pickedFmts.length) p.set('fmt', pickedFmts.join(','));
     if(library) p.set('library', library);
     if(onlyFav) p.set('favorite','true');
     if(onlyUnread) p.set('progress','unread');
@@ -706,7 +748,8 @@ async function viewSearch(view){
     try{ data = await api((mode==='series'?'/api/series?':'/api/books?')+p.toString()); }
     catch(e){ clear(results).append(h('div',{class:'center-pad'}, e.message)); return; }
     clear(results);
-    const label = [q?`'${q}'`:null, tag?`#${tag}`:null, onlyFav?'즐겨찾기':null,
+    const label = [q?`'${q}'`:null, ...pickedTags.map(t=>'#'+t),
+                   pickedFmts.length?pickedFmts.join('/'):null, onlyFav?'즐겨찾기':null,
                    onlyUnread?'안 읽음':null,
                    minRating?`★${minRating} 이상`:null].filter(Boolean).join(' + ');
     if(!data.items.length){ results.append(h('div',{class:'center-pad'},`${label} 검색 결과가 없습니다.`)); return; }
@@ -717,6 +760,8 @@ async function viewSearch(view){
     results.append(grid);
   }
 
+  tagFilter.addEventListener('input', ()=>drawTags());
+  paintFmts();
   loadTags();
   if(q0){ go(); input.focus(); }
   else{ clear(results).append(h('div',{class:'center-pad'},'검색어를 입력하거나 위의 태그를 선택하세요.')); input.focus(); }
@@ -1022,6 +1067,31 @@ async function adminLibraries(body){
     try{
       const s = await api('/api/libraries/scan-status');
       clear(statusBox);
+      // 대기열 표시
+      api('/api/libraries/queue').then(q=>{
+        const qw = statusBox.querySelector('.queue-box');
+        if(qw) qw.remove();
+        if(!q.queue || !q.queue.length) return;
+        const box = h('div',{class:'queue-box'},
+          h('div',{class:'muted',style:{fontSize:'12.5px',margin:'8px 0 4px'}},
+            `대기열 ${q.queue.length}개`),
+          ...q.queue.map((it,i)=> h('div',{class:'queue-row'},
+            h('span',{class:'muted',style:{fontSize:'11px',minWidth:'18px'}}, String(i+1)),
+            h('span',{style:{flex:'1',minWidth:0}}, it.name + (it.deep?' (심층)':'')),
+            h('button',{class:'btn sm',title:'위로',disabled:i===0?'disabled':null,onclick:async()=>{
+              const ids=q.queue.map(x=>x.library_id);
+              [ids[i-1],ids[i]]=[ids[i],ids[i-1]];
+              try{ await api('/api/libraries/queue/order',{method:'PUT',body:{ids}}); refreshStatus(); }catch(e){toast(e.message);}
+            }},'▲'),
+            h('button',{class:'btn sm danger',onclick:async()=>{
+              try{ await api('/api/libraries/queue/'+it.library_id,{method:'DELETE'}); toast('대기열에서 제거'); refreshStatus(); }catch(e){toast(e.message);}
+            }},'취소'))),
+          h('button',{class:'btn sm',style:{marginTop:'6px'},onclick:async()=>{
+            try{ await api('/api/libraries/queue/clear',{method:'POST'}); toast('대기열 비움'); refreshStatus(); }catch(e){toast(e.message);}
+          }},'대기열 비우기'));
+        statusBox.append(box);
+      }).catch(()=>{});
+
       if(s.running){
         const pct = s.found? Math.round((s.processed/Math.max(s.found,1))*100):0;
         const modeLbl = s.mode==='deep'?'심층 스캔':'스캔';
@@ -1049,21 +1119,45 @@ async function adminLibraries(body){
   adminScanTimer = setInterval(refreshStatus, 2000);
 
   const listWrap = h('div',{});
-  async function move(idx, delta){
-    const ids = libs.map(x=>x.id);
-    const j = idx+delta;
-    if(j<0||j>=ids.length) return;
-    [ids[idx], ids[j]] = [ids[j], ids[idx]];
-    try{ await api('/api/libraries/order',{method:'PUT',body:{ids}}); await loadLibraries(); adminLibraries(body); }
-    catch(e){ toast(e.message); }
+  let saveTimer = null;
+  // 드래그로 순서 변경 — 화면을 다시 그리지 않고 DOM 만 옮긴 뒤 저장한다
+  function persistOrder(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async ()=>{
+      const ids = [...listWrap.children].map(el=>+el.dataset.libid).filter(Boolean);
+      try{
+        await api('/api/libraries/order',{method:'PUT',body:{ids}});
+        state.libraries = ids.map(id=>libs.find(l=>l.id===id)).filter(Boolean);
+        toast('순서를 저장했습니다.');
+      }catch(e){ toast(e.message); }
+    }, 400);
   }
+  function swapWith(el, delta){
+    const sib = delta<0 ? el.previousElementSibling : el.nextElementSibling;
+    if(!sib || !sib.dataset.libid) return;
+    if(delta<0) listWrap.insertBefore(el, sib); else listWrap.insertBefore(sib, el);
+    persistOrder();
+  }
+  let dragEl = null;
   libs.forEach((l, idx)=>{
-    listWrap.append(h('div',{class:'list-card'},
+    listWrap.append(h('div',{class:'list-card', draggable:'true', dataset:{libid:String(l.id)},
+      ondragstart:e=>{ dragEl=e.currentTarget; e.currentTarget.classList.add('dragging');
+                       e.dataTransfer.effectAllowed='move'; },
+      ondragend:e=>{ e.currentTarget.classList.remove('dragging'); dragEl=null; persistOrder(); },
+      ondragover:e=>{
+        e.preventDefault();
+        const t=e.currentTarget;
+        if(!dragEl || dragEl===t) return;
+        const r=t.getBoundingClientRect();
+        const after = (e.clientY - r.top) > r.height/2;
+        listWrap.insertBefore(dragEl, after ? t.nextSibling : t);
+      }},
+      h('div',{class:'drag-handle',title:'끌어서 순서 변경'},'⠿'),
       h('div',{style:{display:'flex',flexDirection:'column',gap:'2px'}},
-        h('button',{class:'btn sm', disabled: idx===0?'disabled':null, title:'위로',
-          onclick:()=>move(idx,-1)},'▲'),
-        h('button',{class:'btn sm', disabled: idx===libs.length-1?'disabled':null, title:'아래로',
-          onclick:()=>move(idx,1)},'▼')),
+        h('button',{class:'btn sm', title:'위로',
+          onclick:e=>swapWith(e.currentTarget.closest('.list-card'),-1)},'▲'),
+        h('button',{class:'btn sm', title:'아래로',
+          onclick:e=>swapWith(e.currentTarget.closest('.list-card'),1)},'▼')),
       h('div',{class:'lc-main'},
         h('div',{class:'lc-title'}, l.name, ' ', l.restricted?h('span',{class:'badge-pill warn'},'제한'):(l.private?h('span',{class:'badge-pill warn'},'비공개'):h('span',{class:'badge-pill'},'공개'))),
         h('div',{class:'lc-sub'}, l.path),
@@ -1164,15 +1258,40 @@ async function adminLibraries(body){
     const name=h('input',{class:'input',value:l.name});
     const restricted=h('input',{type:'checkbox',checked:l.restricted});
     const priv2=h('input',{type:'checkbox',...(l.private?{checked:'checked'}:{})});
+    const extraPaths=h('textarea',{class:'input',rows:'3',style:{fontFamily:'monospace',fontSize:'12px'},
+      placeholder:'/Comic/추가폴더'});
+    extraPaths.value=(l.extra_paths||[]).join('\n');
+    const ls=((l.settings||{}).schedule)||{};
+    const schedMode=h('select',{class:'input',style:{width:'auto'}},
+      h('option',{value:'global', selected:ls.mode!=='custom'&&ls.mode!=='off'},'전역 설정 따름'),
+      h('option',{value:'custom', selected:ls.mode==='custom'},'개별 설정'),
+      h('option',{value:'off', selected:ls.mode==='off'},'예약 안 함'));
+    const qh=h('input',{class:'input',type:'number',min:'1',max:'720',value:String(ls.quick_every_hours||6),style:{maxWidth:'72px'}});
+    const dd=h('input',{class:'input',type:'number',min:'1',max:'365',value:String(ls.deep_every_days||7),style:{maxWidth:'72px'}});
+    const dat=h('input',{class:'input',type:'time',value:ls.deep_at||'04:00',style:{maxWidth:'110px'}});
     openSheet(h('div',{},
       h('h3',{},'라이브러리 수정'),
       h('label',{class:'field',style:{marginTop:'12px'}},h('span',{},'이름'),name),
       h('label',{style:{display:'flex',alignItems:'center',gap:'8px'}},restricted,h('span',{},'제한(성인/R17)')),
       h('label',{style:{display:'flex',alignItems:'center',gap:'8px',marginTop:'6px'}},priv2,h('span',{},'비공개 — 허용한 사용자만 접근')),
+      h('div',{style:{marginTop:'12px'}},
+        h('div',{class:'muted',style:{fontSize:'12.5px',marginBottom:'4px'}},'추가 경로 (한 줄에 하나)'),
+        extraPaths),
+      h('div',{style:{marginTop:'12px'}},
+        h('div',{class:'muted',style:{fontSize:'12.5px',marginBottom:'4px'}},'이 라이브러리 예약 스캔'),
+        h('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap',alignItems:'center'}},
+          schedMode,
+          h('span',{class:'muted',style:{fontSize:'12px'}},'빠른(시간)'), qh,
+          h('span',{class:'muted',style:{fontSize:'12px'}},'심층(일)'), dd, dat)),
       h('div',{class:'modal-actions'},
         h('button',{class:'btn',onclick:closeOverlay},'취소'),
         h('button',{class:'btn primary',onclick:async()=>{
-          await api('/api/libraries/'+l.id,{method:'PATCH',body:{name:name.value.trim(),restricted:restricted.checked,private:priv2.checked}});
+          await api('/api/libraries/'+l.id,{method:'PATCH',body:{name:name.value.trim(),restricted:restricted.checked,private:priv2.checked,
+            extra_paths:extraPaths.value.split('\n').map(x=>x.trim()).filter(Boolean),
+            settings:{schedule:{mode:schedMode.value,
+              quick_enabled:schedMode.value==='custom', quick_every_hours:parseInt(qh.value)||6,
+              deep_enabled:schedMode.value==='custom', deep_every_days:parseInt(dd.value)||7,
+              deep_at:dat.value||'04:00'}}}});
           await loadLibraries(); closeOverlay(); adminLibraries(body);
         }},'저장')
       )
@@ -1495,6 +1614,8 @@ async function adminScanSettings(body){
   const rangeOn=h('input',{type:'checkbox',...(tr.chapter_range!==false?{checked:'checked'}:{})});
   const rangeTagOn=h('input',{type:'checkbox',...(tr.chapter_range_tag?{checked:'checked'}:{})});
   const cleanOn=h('input',{type:'checkbox',...(tr.clean_title!==false?{checked:'checked'}:{})});
+  const exclIn=h('input',{class:'input',placeholder:'보관소, 자료실'});
+  exclIn.value=(tr.exclude_folders||[]).join(', ');
   const kwArea=h('textarea',{class:'input',rows:'5',style:{fontFamily:'monospace',fontSize:'12px'},
     placeholder:'완결=완결\nBL=BL'}, );
   kwArea.value = (tr.keywords||[]).map(k=>`${k.match}=${k.tag||k.match}`).join('\n');
@@ -1513,7 +1634,8 @@ async function adminScanSettings(body){
       return {pattern:pat, tag:rhs};
     });
     try{ await api('/api/scan/tag-rules',{method:'PUT',body:{enabled:trOn.checked,bracket_tags:brOn.checked,author_marker:authOn.checked,
-        chapter_range:rangeOn.checked,chapter_range_tag:rangeTagOn.checked,clean_title:cleanOn.checked,keywords,regex}});
+        chapter_range:rangeOn.checked,chapter_range_tag:rangeTagOn.checked,clean_title:cleanOn.checked,
+        exclude_folders:exclIn.value.split(',').map(x=>x.trim()).filter(Boolean),keywords,regex}});
       toast('태그 규칙 저장됨 (다음 스캔부터 적용)'); }catch(e){ toast(e.message); } ev.target.disabled=false;
   };
 
@@ -1527,6 +1649,9 @@ async function adminScanSettings(body){
       h('label',{class:'sched-row'}, rangeOn, h('span',{},'"1-99" 을 화수 범위로 인식 (제목에서 분리)')),
       h('label',{class:'sched-row'}, rangeTagOn, h('span',{},'화수 범위를 태그로도 남기기 (1-99화·연재분)')),
       h('label',{class:'sched-row'}, cleanOn, h('span',{},'인식한 부분을 제목에서 제거')),
+      h('div',{style:{marginTop:'8px'}},
+        h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},
+          '태그로 만들지 않을 폴더 이름 (쉼표로 구분 · 예: 보관소, 자료실)'), exclIn),
       h('div',{style:{marginTop:'8px'}}, h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'키워드 규칙 (형식: 파일명포함어=태그)'), kwArea),
       h('div',{style:{marginTop:'8px'}}, h('div',{class:'muted',style:{fontSize:'12px',marginBottom:'4px'}},'정규식 규칙 (형식: 패턴 => 태그  또는  패턴 => group:1)'), rxArea),
       h('div',{style:{marginTop:'10px'}}, h('button',{class:'btn primary',onclick:saveRules},'태그 규칙 저장'))
@@ -1792,6 +1917,8 @@ async function openComicReader(book){
 
   const settingsBtn = h('button',{class:'icon-btn',html:IC.gear});
   const {reader, top} = readerShell(b.title, {actions:[settingsBtn]});
+  let curBookId = b.id;                       // 이어보기로 다음 화에 진입하면 갱신됨
+  const titleEl = top.querySelector('.rt-title');
   const bodyWrap = h('div',{class:'reader-body'});
   const bottom = h('div',{class:'reader-bottom'});
   const slider = h('input',{type:'range',min:0,max:Math.max(0,pages-1),value:cur});
@@ -1812,6 +1939,12 @@ async function openComicReader(book){
   slider.addEventListener('change', e=>{ if(mode==='webtoon') scrollToPage(+e.target.value); });
 
   function setCur(n, save=true){
+    if(curBookId !== b.id){        // 이어붙인 다음 화 구간
+      cur = Math.max(0, n);
+      pnum.textContent = `${cur+1}`;
+      if(save) saveProgress(curBookId, {page:cur});
+      return;
+    }
     cur = Math.max(0, Math.min(pages-1, n));
     slider.value=cur; pnum.textContent=`${cur+1} / ${pages}`;
     if(save) saveProgress(b.id, {page:cur, completed: cur>=pages-1 ? true : undefined});
@@ -1831,11 +1964,56 @@ async function openComicReader(book){
         strip.append(h('img',{loading:'lazy', dataset:{page:i}, src:`/api/books/${b.id}/pages/${i}`}));
       }
       bodyWrap.append(strip);
+      // 웹툰은 스크롤이 주 조작이므로 좌우 탭 영역은 두지 않고,
+      // 가운데를 눌렀을 때만 상·하단 바를 켜고 끈다. 스크롤을 내리면 자동으로 숨긴다.
       const oldz = reader.querySelector('.tap-zones'); if(oldz) oldz.remove();
+      const midZone = h('div',{class:'tap-mid', onclick:()=>toggleHud()});
+      reader.append(midZone);
+      let lastY = 0, hudTimer = null;
+      bodyWrap.addEventListener('scroll', ()=>{
+        const y = bodyWrap.scrollTop;
+        if(y > lastY + 24){ reader.classList.add('hud-hidden'); }
+        lastY = y;
+        clearTimeout(hudTimer);
+        hudTimer = setTimeout(()=>{ nearEndCheck(); }, 120);
+      });
+
       io = new IntersectionObserver(entries=>{
-        entries.forEach(en=>{ if(en.isIntersecting){ setCur(+en.target.dataset.page); } });
+        entries.forEach(en=>{
+          if(!en.isIntersecting) return;
+          const el = en.target;
+          if(el.dataset.book && +el.dataset.book !== curBookId){
+            curBookId = +el.dataset.book;                 // 다음 화 구간으로 진입
+            titleEl.textContent = el.dataset.booktitle || titleEl.textContent;
+          }
+          setCur(+el.dataset.page);
+        });
       }, {root:bodyWrap, threshold:0.5});
       strip.querySelectorAll('img').forEach(im=>io.observe(im));
+
+      // 끝에 도달하면 다음 화를 이어붙여 스크롤만으로 계속 보게 한다
+      let appending = false, noMore = false, tailId = b.id;
+      async function nearEndCheck(){
+        if(appending || noMore || !prefs.autoNext) return;
+        const left = bodyWrap.scrollHeight - bodyWrap.scrollTop - bodyWrap.clientHeight;
+        if(left > bodyWrap.clientHeight * 1.5) return;
+        appending = true;
+        try{
+          const r = await api(`/api/books/${tailId}/next`);
+          const nx = r.next;
+          if(!nx){ noMore = true; return; }
+          strip.append(h('div',{class:'next-sep'}, '다음 화 · ' + nx.title));
+          const np = nx.page_count || 0;
+          for(let i=0;i<np;i++){
+            const im = h('img',{loading:'lazy',
+              dataset:{page:i, book:String(nx.id), booktitle:nx.title},
+              src:`/api/books/${nx.id}/pages/${i}`});
+            strip.append(im); io.observe(im);
+          }
+          tailId = nx.id;
+        }catch(e){ noMore = true; }
+        finally{ appending = false; }
+      }
       requestAnimationFrame(()=>scrollToPage(cur,false));
     }else{
       bodyWrap.className='reader-body';

@@ -86,6 +86,8 @@ _COLUMN_MIGRATIONS = {
     "libraries": [
         ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
         ("private", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("extra_paths", "TEXT"),
+        ("settings", "TEXT"),
     ],
 }
 

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -11,6 +12,14 @@ from ..models import User, Library, Series, Book
 router = APIRouter(prefix="/api/libraries", tags=["libraries"])
 
 
+def _jload(v, default):
+    import json as _j
+    try:
+        return _j.loads(v) if v else default
+    except Exception:
+        return default
+
+
 def _lib_dict(db: Session, lib: Library):
     series_cnt = db.scalar(select(func.count(Series.id)).where(Series.library_id == lib.id)) or 0
     book_cnt = db.scalar(select(func.count(Book.id)).where(Book.library_id == lib.id)) or 0
@@ -20,6 +29,9 @@ def _lib_dict(db: Session, lib: Library):
         "path": lib.path,
         "restricted": lib.restricted,
         "private": bool(getattr(lib, "private", False)),
+        "extra_paths": _jload(lib.extra_paths, []),
+        "settings": _jload(lib.settings, {}),
+        "roots": scanner.library_roots(lib),
         "sort_order": lib.sort_order or 0,
         "series_count": series_cnt,
         "book_count": book_cnt,
@@ -44,6 +56,8 @@ def create_library(body: schemas.LibraryCreateIn, _: User = Depends(security.req
     max_order = db.scalar(select(func.max(Library.sort_order))) or 0
     lib = Library(name=body.name.strip() or os.path.basename(path), path=path,
                   restricted=body.restricted, private=bool(body.private),
+                  extra_paths=json.dumps(body.extra_paths or [], ensure_ascii=False),
+                  settings=json.dumps(body.settings or {}, ensure_ascii=False),
                   sort_order=max_order + 1)
     db.add(lib)
     db.commit()
@@ -64,6 +78,11 @@ def update_library(library_id: int, body: schemas.LibraryUpdateIn,
         lib.restricted = body.restricted
     if body.private is not None:
         lib.private = body.private
+    if body.extra_paths is not None:
+        cleaned = [str(p).strip().rstrip("/") for p in body.extra_paths if str(p).strip()]
+        lib.extra_paths = json.dumps(cleaned, ensure_ascii=False)
+    if body.settings is not None:
+        lib.settings = json.dumps(body.settings, ensure_ascii=False)
     db.commit()
     db.refresh(lib)
     return _lib_dict(db, lib)
@@ -86,20 +105,31 @@ def scan_one(library_id: int, deep: bool = False,
     lib = db.get(Library, library_id)
     if not lib:
         raise HTTPException(status_code=404, detail="라이브러리를 찾을 수 없습니다.")
+    if scanner.scan_status.get("running"):
+        added = scanner.enqueue_scan(lib.id, lib.name, deep=deep)
+        return {"ok": True, "queued": True,
+                "message": "대기열에 추가했습니다." if added else "이미 대기 중입니다.",
+                "deep": deep, "queue": scanner.queue_status()}
     started = scanner.scan_library_async(library_id, deep=deep)
     if not started:
-        raise HTTPException(status_code=409, detail="이미 스캔이 진행 중입니다.")
+        scanner.enqueue_scan(lib.id, lib.name, deep=deep)
+        return {"ok": True, "queued": True, "message": "대기열에 추가했습니다.", "deep": deep}
     kind = "심층 스캔" if deep else "스캔"
-    return {"ok": True, "message": f"{kind}을 시작했습니다.", "deep": deep}
+    return {"ok": True, "queued": False, "message": f"{kind}을 시작했습니다.", "deep": deep}
 
 
 @router.post("/scan-all")
-def scan_all(deep: bool = False, _: User = Depends(security.require_admin)):
+def scan_all(deep: bool = False, _: User = Depends(security.require_admin),
+             db: Session = Depends(get_db)):
+    libs = db.scalars(select(Library).order_by(Library.sort_order, Library.name)).all()
+    if scanner.scan_status.get("running"):
+        for l in libs:
+            scanner.enqueue_scan(l.id, l.name, deep=deep)
+        return {"ok": True, "queued": True, "message": "모든 라이브러리를 대기열에 추가했습니다.",
+                "queue": scanner.queue_status()}
     started = scanner.scan_all_async(deep=deep)
-    if not started:
-        raise HTTPException(status_code=409, detail="이미 스캔이 진행 중입니다.")
     kind = "전체 심층 스캔" if deep else "전체 스캔"
-    return {"ok": True, "message": f"{kind}을 시작했습니다.", "deep": deep}
+    return {"ok": True, "queued": not started, "message": f"{kind}을 시작했습니다.", "deep": deep}
 
 
 @router.put("/order")
@@ -168,3 +198,31 @@ def browse_folders(path: str = "", _: User = Depends(security.require_admin)):
         parentdir = os.path.dirname(real)
         parent = parentdir if _within_roots(parentdir, roots) else ""
     return {"path": real, "parent": parent, "is_root": False, "entries": entries}
+
+
+# ============================ 스캔 대기열 ============================
+@router.get("/queue")
+def get_queue(_: User = Depends(security.get_current_user)):
+    return {"running": bool(scanner.scan_status.get("running")),
+            "current": {"library_id": scanner.scan_status.get("library_id"),
+                        "library_name": scanner.scan_status.get("library_name"),
+                        "mode": scanner.scan_status.get("mode")},
+            "queue": scanner.queue_status()}
+
+
+@router.put("/queue/order")
+def put_queue_order(body: schemas.LibraryOrderIn,
+                    _: User = Depends(security.require_admin)):
+    return {"ok": True, "queue": scanner.reorder_queue(body.ids)}
+
+
+@router.delete("/queue/{library_id}")
+def cancel_queued(library_id: int, _: User = Depends(security.require_admin)):
+    n = scanner.dequeue_scan(library_id)
+    return {"ok": True, "removed": n, "queue": scanner.queue_status()}
+
+
+@router.post("/queue/clear")
+def clear_queued(_: User = Depends(security.require_admin)):
+    n = scanner.clear_queue()
+    return {"ok": True, "removed": n, "queue": scanner.queue_status()}

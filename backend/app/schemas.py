@@ -38,12 +38,16 @@ class LibraryCreateIn(BaseModel):
     path: str
     restricted: bool = False
     private: Optional[bool] = None
+    extra_paths: Optional[List[str]] = None
+    settings: Optional[dict] = None
 
 
 class LibraryUpdateIn(BaseModel):
     name: Optional[str] = None
     restricted: Optional[bool] = None
     private: Optional[bool] = None
+    extra_paths: Optional[List[str]] = None
+    settings: Optional[dict] = None
 
 
 class TagsSetIn(BaseModel):
@@ -81,6 +85,7 @@ class TagRulesIn(BaseModel):
     chapter_range: Optional[bool] = None
     chapter_range_tag: Optional[bool] = None
     clean_title: Optional[bool] = None
+    exclude_folders: Optional[List[str]] = None
 
 
 class MetadataApplyIn(BaseModel):

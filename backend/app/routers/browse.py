@@ -164,6 +164,7 @@ def home(user: User = Depends(security.get_current_user), db: Session = Depends(
 @router.get("/series")
 def list_series(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
                 library: int = Query(None), search: str = Query(None), tag: str = Query(None),
+                tags: str = Query(None), fmt: str = Query(None),
                 favorite: bool = Query(False), min_rating: int = Query(0, ge=0, le=5),
                 sort: str = Query("name"), order: str = Query("asc"),
                 page: int = Query(1, ge=1), size: int = Query(40, ge=1, le=200)):
@@ -182,6 +183,16 @@ def list_series(user: User = Depends(security.get_current_user), db: Session = D
             stmt = stmt.where(Series.chosung.like(f"%{cho}%"))
         else:
             stmt = stmt.where(Series.name.like(f"%{search}%"))
+    if tags:
+        for tn in [x.strip() for x in tags.split(",") if x.strip()]:
+            stmt = stmt.where(Series.id.in_(
+                select(Book.series_id).join(BookTag, BookTag.book_id == Book.id)
+                .join(Tag, Tag.id == BookTag.tag_id).where(Tag.name == tn)))
+    if fmt:
+        fl = [x.strip().lower() for x in fmt.split(",") if x.strip()]
+        if fl:
+            stmt = stmt.where(Series.id.in_(
+                select(Book.series_id).where(Book.fmt.in_(fl))))
     if tag:
         stmt = stmt.where(
             Series.id.in_(
@@ -257,7 +268,7 @@ def series_detail(series_id: int, user: User = Depends(security.get_current_user
 @router.get("/books")
 def list_books(user: User = Depends(security.get_current_user), db: Session = Depends(get_db),
                library: int = Query(None), series: int = Query(None), search: str = Query(None),
-               tag: str = Query(None), fmt: str = Query(None),
+               tag: str = Query(None), tags: str = Query(None), fmt: str = Query(None),
                favorite: bool = Query(False), min_rating: int = Query(0, ge=0, le=5),
                progress: str = Query(None),  # reading | completed | unread
                sort: str = Query("title"), order: str = Query("asc"),
@@ -281,7 +292,17 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
             stmt = stmt.where(or_(Book.title.like(f"%{search}%"),
                                   Book.author.like(f"%{search}%")))
     if fmt:
-        stmt = stmt.where(Book.fmt == fmt.lower())
+        fl = [x.strip().lower() for x in fmt.split(",") if x.strip()]
+        if len(fl) == 1:
+            stmt = stmt.where(Book.fmt == fl[0])
+        elif fl:
+            stmt = stmt.where(Book.fmt.in_(fl))
+    # 여러 태그를 '모두' 가진 책만 (쉼표 구분)
+    if tags:
+        for tn in [x.strip() for x in tags.split(",") if x.strip()]:
+            stmt = stmt.where(Book.id.in_(
+                select(BookTag.book_id).join(Tag, Tag.id == BookTag.tag_id)
+                .where(Tag.name == tn)))
     if tag:
         stmt = stmt.where(
             Book.id.in_(

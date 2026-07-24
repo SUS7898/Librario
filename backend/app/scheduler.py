@@ -72,6 +72,34 @@ def _tick():
     if scanner.scan_status.get("running"):
         return
 
+    # ---- 라이브러리별 예약 (설정이 있는 라이브러리는 개별 주기를 따른다) ----
+    try:
+        db = SessionLocal()
+        try:
+            from .models import Library
+            from sqlalchemy import select as _sel
+            for lib in db.scalars(_sel(Library)).all():
+                ls = (scanner.library_settings(lib) or {}).get("schedule") or {}
+                if ls.get("mode") != "custom":
+                    continue
+                lq = settings_store.get_json(db, f"last_scan_lib_{lib.id}_quick", None)
+                ld = settings_store.get_json(db, f"last_scan_lib_{lib.id}_deep", None)
+                if _deep_due(ls, ld):
+                    settings_store.set_json(db, f"last_scan_lib_{lib.id}_deep",
+                                            dt.datetime.utcnow().isoformat())
+                    scanner.enqueue_scan(lib.id, lib.name, deep=True)
+                elif _quick_due(ls, lq):
+                    settings_store.set_json(db, f"last_scan_lib_{lib.id}_quick",
+                                            dt.datetime.utcnow().isoformat())
+                    scanner.enqueue_scan(lib.id, lib.name, deep=False)
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[scheduler] 라이브러리별 예약 확인 실패: {e}", flush=True)
+
+    if scanner.scan_status.get("running"):
+        return
+
     # 심층이 우선 (심층은 증분을 포함)
     if _deep_due(cfg, last_deep):
         print("[scheduler] 심층 예약 스캔 시작", flush=True)

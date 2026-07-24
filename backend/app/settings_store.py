@@ -29,6 +29,7 @@ DEFAULT_SCAN_SCHEDULE = {
 #   - keyword: 파일명(대소문자 무시)에 해당 문자열이 있으면 tag 부여
 #   - regex:   정규식이 매치되면 tag 부여(고정 태그) 또는 group=N 으로 매치 그룹을 태그로
 DEFAULT_TAG_RULES = {
+    "exclude_folders": [],   # 태그로 만들지 않을 폴더 이름들 (예: ["보관소","완결"])
     "author_marker": True,   # "제목 @작가" 에서 작가 추출
     "chapter_range": True,       # "제목 1-99" 를 인식해 제목에서 분리
     "chapter_range_tag": False,  # 인식한 화수를 태그(1-99화/연재분)로도 남길지
