@@ -327,3 +327,16 @@ button:disabled{opacity:.38;pointer-events:none}
 
 .fav-mark{color:var(--amber)}
 .card-rate{color:var(--amber);font-weight:600}
+
+
+/* 대용량 EPUB 경량 리더 */
+.epub-lite{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:calc(var(--top-h) + 8px) 18px 104px}
+.epub-lite .lite-body{max-width:44em;margin:0 auto}
+.epub-lite .lite-body p{margin:0 0 .85em;line-height:inherit}
+.epub-lite .lite-body h1,.epub-lite .lite-body h2,.epub-lite .lite-body h3{
+  margin:1.4em 0 .7em;line-height:1.35;font-weight:700}
+.epub-lite .lite-body img{max-width:100%;height:auto;display:block;margin:1em auto}
+.epub-lite .lite-body a{color:#d9973f}
+.reader.hud-hidden .epub-lite{padding-top:14px;padding-bottom:24px}
+
+.pre-badge{font-size:11px;color:var(--muted-2);white-space:nowrap;min-width:0;opacity:.85}

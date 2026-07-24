@@ -105,3 +105,13 @@ class ScanOptionsIn(BaseModel):
 class ThreadsIn(BaseModel):
     read_threads: Optional[int] = None
     scan_workers: Optional[int] = None
+
+
+class IdsIn(BaseModel):
+    ids: List[int]
+
+
+class MemoryIn(BaseModel):
+    cache_mb: Optional[int] = None
+    mmap_mb: Optional[int] = None
+    home_cache_sec: Optional[int] = None

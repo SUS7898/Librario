@@ -3,7 +3,7 @@
    - 대용량 리더 라이브러리(vendor)·아이콘은 cache-first: 불변이라 캐시가 이득(오프라인 가능).
    - API/미디어(책 파일)는 캐시하지 않음(인증/최신성/대용량).
 */
-const CACHE = 'librario-shell-v10';
+const CACHE = 'librario-shell-v14';
 const SHELL = [
   '/', '/index.html',
   '/assets/app.css', '/assets/app.js',

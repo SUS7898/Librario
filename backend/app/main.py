@@ -84,6 +84,45 @@ def _startup():
             print(f"[startup] 읽기 스레드 {apply_read_threads(_n)}개", flush=True)
     except Exception:
         pass
+    # 기존 데이터에 초성 색인 채우기 (한 번만, 재스캔 없이 초성 검색 사용 가능)
+    try:
+        from .database import SessionLocal as _S2
+        from .models import Book as _B, Series as _S3
+        from .formats import chosung_of as _cho
+        from sqlalchemy import select as _sel
+        _db2 = _S2()
+        try:
+            n = 0
+            for b in _db2.scalars(_sel(_B).where(_B.chosung.is_(None))).all():
+                b.chosung = _cho(str(b.title or ""))
+                n += 1
+            for sr in _db2.scalars(_sel(_S3).where(_S3.chosung.is_(None))).all():
+                sr.chosung = _cho(str(sr.name or ""))
+                n += 1
+            if n:
+                _db2.commit()
+                print(f"[startup] 초성 색인 {n}건 생성", flush=True)
+        finally:
+            _db2.close()
+    except Exception as e:
+        print(f"[startup] 초성 색인 실패: {e}", flush=True)
+
+    # 저장된 메모리 설정 적용
+    try:
+        from .database import SessionLocal as _S4, apply_memory_settings
+        from . import settings_store as _ss4
+        from .routers.browse import set_home_ttl as _sht
+        _db4 = _S4()
+        try:
+            _m = _ss4.get_memory(_db4)
+        finally:
+            _db4.close()
+        apply_memory_settings(_m.get("cache_mb"), _m.get("mmap_mb"))
+        _sht(_m.get("home_cache_sec", 20))
+        print(f"[startup] DB 캐시 {_m.get('cache_mb')}MB · mmap {_m.get('mmap_mb')}MB", flush=True)
+    except Exception as e:
+        print(f"[startup] 메모리 설정 적용 실패: {e}", flush=True)
+
     scheduler.start()  # 예약 스캔 스케줄러
 
 

@@ -4,7 +4,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
-from .. import security, schemas, serializers, thumbnails
+from .. import security, schemas, serializers, thumbnails, formats
 from ..database import get_db
 from ..models import (
     SeriesRating, Favorite,
@@ -36,6 +36,14 @@ def _require_series(db, user, series_id) -> Series:
 # 홈 응답 캐시 (사용자별). 스캔으로 내용이 바뀌면 버전이 올라가 자동 무효화된다.
 _HOME_CACHE = {}
 _HOME_TTL = 20.0
+
+
+def set_home_ttl(sec):
+    global _HOME_TTL
+    try:
+        _HOME_TTL = float(max(0, min(600, int(sec))))
+    except (TypeError, ValueError):
+        pass
 
 
 def _home_cache_get(user_id: int):
@@ -169,7 +177,11 @@ def list_series(user: User = Depends(security.get_current_user), db: Session = D
 
     stmt = select(Series).where(Series.library_id.in_(ids), Series.book_count > 0)
     if search:
-        stmt = stmt.where(Series.name.like(f"%{search}%"))
+        if formats.is_chosung_query(search):
+            cho = formats.chosung_of(search)
+            stmt = stmt.where(Series.chosung.like(f"%{cho}%"))
+        else:
+            stmt = stmt.where(Series.name.like(f"%{search}%"))
     if tag:
         stmt = stmt.where(
             Series.id.in_(
@@ -247,7 +259,7 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
                library: int = Query(None), series: int = Query(None), search: str = Query(None),
                tag: str = Query(None), fmt: str = Query(None),
                favorite: bool = Query(False), min_rating: int = Query(0, ge=0, le=5),
-               progress: str = Query(None),  # reading | completed
+               progress: str = Query(None),  # reading | completed | unread
                sort: str = Query("title"), order: str = Query("asc"),
                page: int = Query(1, ge=1), size: int = Query(40, ge=1, le=200)):
     ids = _acc_ids(db, user)
@@ -262,7 +274,12 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
     if series is not None:
         stmt = stmt.where(Book.series_id == series)
     if search:
-        stmt = stmt.where(or_(Book.title.like(f"%{search}%"), Book.author.like(f"%{search}%")))
+        if formats.is_chosung_query(search):
+            cho = formats.chosung_of(search)
+            stmt = stmt.where(Book.chosung.like(f"%{cho}%"))
+        else:
+            stmt = stmt.where(or_(Book.title.like(f"%{search}%"),
+                                  Book.author.like(f"%{search}%")))
     if fmt:
         stmt = stmt.where(Book.fmt == fmt.lower())
     if tag:
@@ -283,6 +300,12 @@ def list_books(user: User = Depends(security.get_current_user), db: Session = De
         stmt = stmt.where(bfav_sub)
     if min_rating:
         stmt = stmt.where(brate_sub >= int(min_rating))
+
+    # 미독(읽은 기록 없음)은 조인 대신 NOT EXISTS 로 처리
+    if progress == "unread":
+        stmt = stmt.where(~select(ReadProgress.id).where(
+            ReadProgress.book_id == Book.id, ReadProgress.user_id == user.id
+        ).correlate(Book).exists())
 
     # 읽기 기록 기반(최근 읽은/이어보기/완독)은 ReadProgress 를 조인
     need_progress = (sort == "read") or (progress in ("reading", "completed"))
@@ -666,3 +689,81 @@ def remove_favorite(kind: str, item_id: int,
         db.delete(f)
         db.commit()
     return {"ok": True, "favorite": False}
+
+
+
+# ============================ 다음 권 / 중복 / 백업 ============================
+@router.get("/books/{book_id}/next")
+def next_book(book_id: int, user: User = Depends(security.get_current_user),
+              db: Session = Depends(get_db)):
+    """같은 시리즈에서 정렬상 다음 책을 돌려준다 (자동 이어읽기용)."""
+    book = _require_book(db, user, book_id)
+    if not book.series_id:
+        return {"next": None}
+    rows = db.scalars(
+        select(Book).where(Book.series_id == book.series_id, Book.status == "active")
+        .order_by(Book.sort_title)
+    ).all()
+    rows = sorted(rows, key=lambda b: formats.natural_key(b.sort_title or ""))
+    idx = next((i for i, b in enumerate(rows) if b.id == book.id), None)
+    if idx is None or idx + 1 >= len(rows):
+        return {"next": None}
+    return {"next": serializers.book_to_dict(db, rows[idx + 1], user, with_tags=False)}
+
+
+# ============================ 다음 권 / 중복 찾기 ============================
+@router.get("/books/{book_id}/next")
+def next_book(book_id: int, user: User = Depends(security.get_current_user),
+              db: Session = Depends(get_db)):
+    """같은 시리즈의 다음 책. 연재물을 끊김 없이 이어 읽기 위한 것."""
+    book = _require_book(db, user, book_id)
+    if not book.series_id:
+        return {"next": None}
+    rows = db.scalars(
+        select(Book).where(Book.series_id == book.series_id, Book.status == "active")
+    ).all()
+    from ..formats import natural_key
+    rows.sort(key=lambda b: natural_key(b.sort_title or b.title or ""))
+    idx = next((i for i, b in enumerate(rows) if b.id == book.id), None)
+    if idx is None or idx + 1 >= len(rows):
+        return {"next": None}
+    nxt = rows[idx + 1]
+    return {"next": serializers.book_to_dict(db, nxt, user, with_tags=False)}
+
+
+@router.get("/books/{book_id}/chapter/{index}")
+def book_chapter(book_id: int, index: int, part: int = Query(0, ge=0),
+                 max_chars: int = Query(120000, ge=20000, le=500000),
+                 user: User = Depends(security.get_current_user),
+                 db: Session = Depends(get_db)):
+    """EPUB 챕터 하나만 HTML 로 반환. 1~2GB 짜리도 전체를 내려받지 않는다."""
+    from ..formats import epub_chapter_html
+    book = _require_book(db, user, book_id)
+    if book.fmt != "epub":
+        raise HTTPException(status_code=400, detail="EPUB 이 아닙니다.")
+    meta = _epub_meta_of(book)
+    if not meta:
+        from .. import scanner
+        if scanner._precompute_epub_meta(book, book.path):
+            db.commit()
+            meta = _epub_meta_of(book)
+    chapters = meta.get("chapters", [])
+    if not chapters:
+        raise HTTPException(status_code=404, detail="목차 정보가 없습니다.")
+    if index < 0 or index >= len(chapters):
+        raise HTTPException(status_code=404, detail="범위를 벗어난 챕터입니다.")
+    ch = chapters[index]
+    book_path, bid = book.path, book.id
+    db.close()  # 압축 해제/전송 동안 연결 반납
+    html = epub_chapter_html(book_path, ch["href"],
+                             f"/api/books/{bid}/epub-asset?href=")
+    if html is None:
+        raise HTTPException(status_code=404, detail="챕터를 읽을 수 없습니다.")
+    # 합본처럼 한 챕터가 매우 큰 경우 태그가 깨지지 않는 위치에서 나눠 보낸다
+    from ..formats import split_html_parts
+    pieces = split_html_parts(html, max_chars)
+    if part >= len(pieces):
+        part = len(pieces) - 1
+    return {"index": index, "title": ch.get("title"), "href": ch.get("href"),
+            "total": len(chapters), "part": part, "parts": len(pieces),
+            "html": pieces[part]}

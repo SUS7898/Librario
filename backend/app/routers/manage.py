@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .. import (security, schemas, serializers, scanner, metadata,
                 settings_store, thumbnails, config)
 from ..database import get_db
-from ..models import (User, Library, Series, Book, Tag, BookTag,
+from ..models import (User, Library, Series, Book, Tag, BookTag, Rating,
                       ReadProgress, utcnow)
 
 router = APIRouter(prefix="/api", tags=["manage"])
@@ -395,3 +395,243 @@ def db_info(_: User = Depends(security.require_admin), db: Session = Depends(get
     return {"size": size,
             "last_optimize": settings_store.get_json(db, "last_db_optimize", None),
             "auto_optimize_days": (settings_store.get_scan_schedule(db) or {}).get("optimize_every_days", 7)}
+
+
+# =========================================================================
+# 중복 파일 찾기
+# =========================================================================
+@router.get("/duplicates")
+def find_duplicates(mode: str = "size_name", limit: int = 200,
+                    _: User = Depends(security.require_admin),
+                    db: Session = Depends(get_db)):
+    """중복 후보를 묶어서 반환.
+       mode=size_name : 파일 크기 + 파일명이 같은 것 (기본, 빠름)
+       mode=title     : 정리된 제목이 같은 것 (다른 버전까지 넓게)
+    """
+    from collections import defaultdict
+    rows = db.execute(
+        select(Book.id, Book.path, Book.title, Book.file_size, Book.fmt,
+               Book.library_id, Book.series_id)
+        .where(Book.status == "active")
+    ).all()
+    groups = defaultdict(list)
+    for bid, bpath, title, size, fmt, lib_id, sid in rows:
+        if mode == "title":
+            key = (str(title or "").strip().lower(),)
+        else:
+            key = (int(size or 0), os.path.basename(bpath).lower())
+        groups[key].append({"id": bid, "path": bpath, "title": title,
+                            "size": int(size or 0), "fmt": fmt,
+                            "library_id": lib_id, "series_id": sid})
+    dups = [g for g in groups.values() if len(g) > 1]
+    dups.sort(key=lambda g: (-sum(b["size"] for b in g[1:]), g[0]["title"]))
+    wasted = sum(b["size"] for g in dups for b in g[1:])
+    return {"mode": mode, "groups": dups[:limit],
+            "group_count": len(dups), "wasted": wasted}
+
+
+@router.post("/duplicates/resolve")
+def resolve_duplicates(body: schemas.IdsIn, permanent: bool = False,
+                       _: User = Depends(security.require_admin),
+                       db: Session = Depends(get_db)):
+    """선택한 책들을 휴지통으로 보내거나(기본) 영구 삭제한다. 원본 파일은 건드리지 않는다."""
+    n = 0
+    for bid in body.ids:
+        b = db.get(Book, bid)
+        if not b:
+            continue
+        if permanent:
+            thumbnails.delete_book_thumbnail(b.id)
+            db.delete(b)
+        else:
+            b.status = "trashed"
+            b.trashed_at = utcnow()
+        n += 1
+    db.commit()
+    return {"ok": True, "count": n, "permanent": permanent}
+
+
+# =========================================================================
+# 백업 / 복원  (별점·즐겨찾기·읽은 기록·수동 태그·설정)
+#   파일 경로를 기준으로 저장하므로, DB 를 새로 만들어 다시 스캔해도 복원된다.
+# =========================================================================
+BACKUP_VERSION = 1
+
+
+@router.get("/backup")
+def export_backup(_: User = Depends(security.require_admin),
+                  db: Session = Depends(get_db)):
+    from ..models import SeriesRating, Favorite, Setting, Tag, BookTag, User as U
+    users = {u.id: u.username for u in db.scalars(select(U)).all()}
+    bpath = {b.id: b.path for b in db.scalars(select(Book)).all()}
+    spath = {s.id: s.path for s in db.scalars(select(Series)).all()}
+
+    progress = [{"user": users.get(p.user_id), "path": bpath.get(p.book_id),
+                 "page": p.page, "position": p.position, "completed": bool(p.completed),
+                 "updated_at": p.updated_at.isoformat() if p.updated_at else None}
+                for p in db.scalars(select(ReadProgress)).all()
+                if users.get(p.user_id) and bpath.get(p.book_id)]
+    ratings = [{"user": users.get(r.user_id), "path": bpath.get(r.book_id), "value": r.value}
+               for r in db.scalars(select(Rating)).all()
+               if users.get(r.user_id) and bpath.get(r.book_id)]
+    sratings = [{"user": users.get(r.user_id), "series_path": spath.get(r.series_id),
+                 "value": r.value}
+                for r in db.scalars(select(SeriesRating)).all()
+                if users.get(r.user_id) and spath.get(r.series_id)]
+    favs = [{"user": users.get(f.user_id),
+             "path": bpath.get(f.book_id) if f.book_id else None,
+             "series_path": spath.get(f.series_id) if f.series_id else None}
+            for f in db.scalars(select(Favorite)).all() if users.get(f.user_id)]
+    tags = [{"path": bpath.get(bt.book_id), "tag": t.name}
+            for bt, t in db.execute(
+                select(BookTag, Tag).join(Tag, Tag.id == BookTag.tag_id)
+                .where(BookTag.source == "manual")).all()
+            if bpath.get(bt.book_id)]
+    settings = {s.key: s.value for s in db.scalars(select(Setting)).all()}
+    libs = [{"name": l.name, "path": l.path, "restricted": bool(l.restricted),
+             "private": bool(getattr(l, "private", False)),
+             "sort_order": l.sort_order or 0}
+            for l in db.scalars(select(Library)).all()]
+    return {"version": BACKUP_VERSION, "app": config.APP_VERSION,
+            "created_at": utcnow().isoformat(),
+            "libraries": libs, "settings": settings,
+            "progress": progress, "ratings": ratings, "series_ratings": sratings,
+            "favorites": favs, "manual_tags": tags,
+            "counts": {"progress": len(progress), "ratings": len(ratings),
+                       "series_ratings": len(sratings), "favorites": len(favs),
+                       "manual_tags": len(tags), "libraries": len(libs)}}
+
+
+@router.post("/restore")
+def import_backup(data: dict, restore_libraries: bool = False,
+                  _: User = Depends(security.require_admin),
+                  db: Session = Depends(get_db)):
+    """백업 JSON 을 되돌린다. 현재 DB 에 있는 항목만 매칭되며, 없는 건 건너뛴다."""
+    from ..models import SeriesRating, Favorite, Setting, Tag, BookTag, User as U
+    if not isinstance(data, dict) or "version" not in data:
+        raise HTTPException(status_code=400, detail="백업 파일 형식이 아닙니다.")
+    uid = {u.username: u.id for u in db.scalars(select(U)).all()}
+    bid = {b.path: b.id for b in db.scalars(select(Book)).all()}
+    sid = {s.path: s.id for s in db.scalars(select(Series)).all()}
+    applied = {"progress": 0, "ratings": 0, "series_ratings": 0,
+               "favorites": 0, "manual_tags": 0, "settings": 0, "libraries": 0}
+
+    for it in data.get("progress", []):
+        u, b = uid.get(it.get("user")), bid.get(it.get("path"))
+        if not u or not b:
+            continue
+        p = db.scalar(select(ReadProgress).where(
+            ReadProgress.user_id == u, ReadProgress.book_id == b))
+        if not p:
+            p = ReadProgress(user_id=u, book_id=b)
+            db.add(p)
+        p.page = int(it.get("page") or 0)
+        p.position = it.get("position")
+        p.completed = bool(it.get("completed"))
+        p.updated_at = utcnow()
+        applied["progress"] += 1
+
+    for it in data.get("ratings", []):
+        u, b = uid.get(it.get("user")), bid.get(it.get("path"))
+        if not u or not b:
+            continue
+        r = db.scalar(select(Rating).where(Rating.user_id == u, Rating.book_id == b))
+        if not r:
+            r = Rating(user_id=u, book_id=b)
+            db.add(r)
+        r.value = max(1, min(5, int(it.get("value") or 0)))
+        applied["ratings"] += 1
+
+    for it in data.get("series_ratings", []):
+        u, s = uid.get(it.get("user")), sid.get(it.get("series_path"))
+        if not u or not s:
+            continue
+        r = db.scalar(select(SeriesRating).where(
+            SeriesRating.user_id == u, SeriesRating.series_id == s))
+        if not r:
+            r = SeriesRating(user_id=u, series_id=s)
+            db.add(r)
+        r.value = max(1, min(5, int(it.get("value") or 0)))
+        applied["series_ratings"] += 1
+
+    for it in data.get("favorites", []):
+        u = uid.get(it.get("user"))
+        if not u:
+            continue
+        b = bid.get(it.get("path")) if it.get("path") else None
+        s = sid.get(it.get("series_path")) if it.get("series_path") else None
+        if not b and not s:
+            continue
+        col = Favorite.book_id == b if b else Favorite.series_id == s
+        if not db.scalar(select(Favorite).where(Favorite.user_id == u, col)):
+            db.add(Favorite(user_id=u, book_id=b, series_id=s))
+            applied["favorites"] += 1
+
+    for it in data.get("manual_tags", []):
+        b = bid.get(it.get("path"))
+        name = (it.get("tag") or "").strip()
+        if not b or not name:
+            continue
+        t = db.scalar(select(Tag).where(Tag.name == name))
+        if not t:
+            t = Tag(name=name)
+            db.add(t)
+            db.flush()
+        if not db.scalar(select(BookTag).where(
+                BookTag.book_id == b, BookTag.tag_id == t.id)):
+            db.add(BookTag(book_id=b, tag_id=t.id, source="manual"))
+            applied["manual_tags"] += 1
+
+    for k, v in (data.get("settings") or {}).items():
+        st = db.scalar(select(Setting).where(Setting.key == k))
+        if not st:
+            st = Setting(key=k)
+            db.add(st)
+        st.value = v
+        applied["settings"] += 1
+
+    if restore_libraries:
+        for it in data.get("libraries", []):
+            if db.scalar(select(Library).where(Library.path == it.get("path"))):
+                continue
+            db.add(Library(name=it.get("name") or it.get("path"), path=it.get("path"),
+                           restricted=bool(it.get("restricted")),
+                           private=bool(it.get("private")),
+                           sort_order=int(it.get("sort_order") or 0)))
+            applied["libraries"] += 1
+
+    db.commit()
+    return {"ok": True, "applied": applied}
+
+
+# =========================================================================
+# 메모리 설정 (RAM 이 넉넉한 NAS 에서 조회 속도 향상)
+# =========================================================================
+@router.get("/memory")
+def get_memory(_: User = Depends(security.require_admin), db: Session = Depends(get_db)):
+    from ..database import runtime_mem
+    cur = settings_store.get_memory(db)
+    total_mb = None
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total_mb = int(line.split()[1]) // 1024
+                    break
+    except OSError:
+        pass
+    return {**cur, "applied": dict(runtime_mem), "system_ram_mb": total_mb}
+
+
+@router.put("/memory")
+def put_memory(body: schemas.MemoryIn, _: User = Depends(security.require_admin),
+               db: Session = Depends(get_db)):
+    from ..database import apply_memory_settings
+    cur = settings_store.set_memory(db, body.model_dump(exclude_none=True))
+    applied = apply_memory_settings(cur["cache_mb"], cur["mmap_mb"])
+    try:
+        from .browse import set_home_ttl
+        set_home_ttl(cur.get("home_cache_sec", 20))
+    except Exception:
+        pass
+    return {**cur, "applied": applied}

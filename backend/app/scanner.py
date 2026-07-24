@@ -209,10 +209,12 @@ def _get_or_create_series(db: Session, lib: Library, file_path: str,
     s = db.scalar(select(Series).where(Series.path == folder))
     if s is None:
         s = Series(library_id=lib.id, name=name, sort_name=name.lower(),
-                   path=folder, book_count=0)
+                   chosung=formats.chosung_of(name), path=folder, book_count=0)
         db.add(s)
         db.flush()
     else:
+        if not s.chosung:
+            s.chosung = formats.chosung_of(s.name or name)
         if s.name != name:
             s.name = name
             s.sort_name = name.lower()
@@ -404,6 +406,13 @@ def _precompute_epub_meta(book: Book, file_path: str) -> bool:
     return True
 
 
+def _fill_chosung(book: Book):
+    try:
+        book.chosung = formats.chosung_of(str(book.title or ""))
+    except Exception:
+        book.chosung = None
+
+
 def _write_book_fields(book: Book, meta: Dict[str, object], size: int, mtime: int):
     pc = meta["page_count"]
     book.title = meta["title"]
@@ -417,9 +426,10 @@ def _write_book_fields(book: Book, meta: Dict[str, object], size: int, mtime: in
     if meta.get("description"):
         book.description = meta["description"]
     book.page_count = pc if isinstance(pc, int) and pc >= 0 else None
+    book.chosung = formats.chosung_of(str(book.title or ''))
     book.meta_updated_at = utcnow()
     book.updated_at = utcnow()
-
+    _fill_chosung(book)
 
 # ---------------------------------------------------------------------------
 # 스캔 본체

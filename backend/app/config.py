@@ -169,3 +169,9 @@ def scan_workers() -> int:
 DB_POOL_SIZE = _int("DB_POOL_SIZE", 20)
 DB_MAX_OVERFLOW = _int("DB_MAX_OVERFLOW", 60)
 DB_POOL_TIMEOUT = _int("DB_POOL_TIMEOUT", 20)
+
+
+# ---- 메모리 사용 (RAM 이 넉넉한 NAS 에서 조회 속도 향상) ----
+# DB 페이지 캐시와 mmap 크기. 값이 클수록 반복 조회가 빨라진다.
+DB_CACHE_MB = _int("DB_CACHE_MB", 40)
+DB_MMAP_MB = _int("DB_MMAP_MB", 256)

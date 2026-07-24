@@ -9,6 +9,7 @@
 """
 import os
 import re
+from urllib.parse import quote_plus
 import posixpath
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile, BadZipFile
@@ -483,3 +484,160 @@ def epub_asset_bytes(path: str, href: str) -> Optional[Tuple[bytes, str]]:
     except (BadZipFile, OSError, KeyError):
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# 한글 초성 색인 (초성 검색용)
+#   "나 혼자만 솔플러" -> "ㄴㅎㅈㅁㅅㅍㄹ"
+# ---------------------------------------------------------------------------
+_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+_JAMO_SET = set(_CHO) | set("ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ")
+
+
+def chosung_of(text: str) -> str:
+    """문자열의 초성 색인을 만든다. 한글이 아닌 글자는 소문자로 그대로 둔다."""
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:                 # 완성형 한글
+            out.append(_CHO[(code - 0xAC00) // 588])
+        elif ch in _JAMO_SET:                        # 이미 자모
+            out.append(ch)
+        elif ch.isalnum():
+            out.append(ch.lower())
+        # 공백/기호는 버려서 띄어쓰기에 관계없이 검색되게 한다
+    return "".join(out)
+
+
+def is_chosung_query(q: str) -> bool:
+    """검색어가 초성(자모)만으로 이루어졌는지."""
+    s = (q or "").replace(" ", "")
+    if not s:
+        return False
+    return all(c in _CHO for c in s)
+
+
+# ---------------------------------------------------------------------------
+# 한글 초성 색인 ("나 혼자만 솔플러" -> "ㄴㅎㅈㅁㅅㅍㄹ")
+# ---------------------------------------------------------------------------
+_CHO = ("ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ",
+        "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ")
+_CHO_SET = set(_CHO)
+
+
+def chosung_of(text: str) -> str:
+    """제목을 초성 문자열로 변환. 한글이 아닌 글자(영문/숫자)는 소문자로 유지."""
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:               # 완성형 한글
+            out.append(_CHO[(code - 0xAC00) // 588])
+        elif ch in _CHO_SET:                        # 이미 초성으로 쓴 글자
+            out.append(ch)
+        elif ch.isalnum():
+            out.append(ch.lower())
+    return "".join(out)
+
+
+def is_chosung_query(q: str) -> bool:
+    """검색어가 초성 위주인지 판정 (초성이 하나라도 있고 완성형 한글이 없으면 초성 검색)."""
+    if not q:
+        return False
+    has_cho = False
+    for ch in q:
+        if ch in _CHO_SET:
+            has_cho = True
+        elif 0xAC00 <= ord(ch) <= 0xD7A3:
+            return False
+    return has_cho
+
+
+# ---------------------------------------------------------------------------
+# EPUB 챕터 1개만 꺼내오기 (대용량 파일을 통째로 내려받지 않기 위한 것)
+# ---------------------------------------------------------------------------
+_SCRIPT_RE = re.compile(rb"<script\b.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+_STYLE_RE = re.compile(rb"<style\b.*?</style\s*>", re.IGNORECASE | re.DOTALL)
+_ON_ATTR_RE = re.compile(rb'\son\w+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)', re.IGNORECASE)
+_BODY_RE = re.compile(rb"<body[^>]*>(.*)</body\s*>", re.IGNORECASE | re.DOTALL)
+_SRC_ATTR_RE = re.compile(
+    rb'(<(?:img|image)\b[^>]*?\b(?:src|xlink:href|href)\s*=\s*)(["\'])([^"\']+)\2',
+    re.IGNORECASE)
+_LINK_RE = re.compile(rb'<link\b[^>]*>', re.IGNORECASE)
+
+
+def epub_chapter_html(path: str, href: str, asset_url_prefix: str) -> Optional[str]:
+    """EPUB 안의 챕터 하나를 안전한 HTML 조각으로 돌려준다.
+    이미지 경로는 asset_url_prefix 로 바꿔 서버에서 따로 받아가게 한다."""
+    if not href or ".." in href:
+        return None
+    try:
+        with ZipFile(path, "r") as z:
+            opf = _epub_opf_path(z)
+            base = posixpath.dirname(opf) if opf else ""
+            full = posixpath.normpath(posixpath.join(base, href)) if base else posixpath.normpath(href)
+            names = set(z.namelist())
+            if full not in names:
+                return None
+            raw = z.read(full)
+    except (BadZipFile, OSError, KeyError):
+        return None
+
+    raw = _SCRIPT_RE.sub(b"", raw)
+    raw = _STYLE_RE.sub(b"", raw)
+    raw = _LINK_RE.sub(b"", raw)
+    raw = _ON_ATTR_RE.sub(b"", raw)
+
+    m = _BODY_RE.search(raw)
+    body = m.group(1) if m else raw
+
+    chap_dir = posixpath.dirname(full)
+    prefix = asset_url_prefix.encode("utf-8")
+
+    def _fix(mo):
+        head, quote, src = mo.group(1), mo.group(2), mo.group(3)
+        s = src.decode("utf-8", "replace").strip()
+        if s.startswith(("http://", "https://", "data:")):
+            return mo.group(0)
+        target = posixpath.normpath(posixpath.join(chap_dir, s))
+        rel = target[len(base) + 1:] if base and target.startswith(base + "/") else target
+        return head + quote + prefix + quote_plus(rel).encode("utf-8") + quote
+
+    body = _SRC_ATTR_RE.sub(_fix, body)
+    return body.decode("utf-8", "replace")
+
+
+# ---------------------------------------------------------------------------
+# 큰 챕터 쪼개기 (합본 EPUB 처럼 한 파일에 수십~수백 화가 들어 있는 경우)
+#   태그 깊이가 0 인 지점에서만 자르므로 태그가 깨지지 않는다.
+# ---------------------------------------------------------------------------
+_TAG_ITER_RE = re.compile(r"<(/?)([a-zA-Z][\w:-]*)([^>]*?)(/?)>", re.DOTALL)
+_VOID_TAGS = {"br", "hr", "img", "image", "input", "meta", "link", "source",
+              "area", "base", "col", "embed", "param", "track", "wbr"}
+
+
+def split_html_parts(html: str, max_chars: int = 120_000):
+    """HTML 을 max_chars 근처에서, 태그 깊이 0 인 위치에서만 잘라 목록으로 돌려준다."""
+    if not html or len(html) <= max_chars:
+        return [html or ""]
+    parts, depth, start, last_safe = [], 0, 0, None
+    for m in _TAG_ITER_RE.finditer(html):
+        closing, name, _attrs, selfclose = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
+        if name in _VOID_TAGS or selfclose == "/":
+            pass
+        elif closing:
+            depth = max(0, depth - 1)
+        else:
+            depth += 1
+        if depth == 0:
+            last_safe = m.end()
+            if last_safe - start >= max_chars:
+                parts.append(html[start:last_safe])
+                start = last_safe
+    tail = html[start:]
+    if tail.strip():
+        parts.append(tail)
+    return parts or [html]

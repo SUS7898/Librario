@@ -172,3 +172,23 @@ def set_threads(db, value: dict) -> dict:
                 pass
     set_json(db, "threads", cur)
     return cur
+
+
+# ---- 메모리 프로필 ----
+DEFAULT_MEMORY = {"cache_mb": 40, "mmap_mb": 256, "home_cache_sec": 20}
+
+
+def get_memory(db) -> dict:
+    return get_json(db, "memory", DEFAULT_MEMORY)
+
+
+def set_memory(db, value: dict) -> dict:
+    cur = get_memory(db)
+    for k, lo, hi in (("cache_mb", 2, 4096), ("mmap_mb", 0, 8192), ("home_cache_sec", 0, 600)):
+        if k in (value or {}) and value[k] is not None:
+            try:
+                cur[k] = max(lo, min(hi, int(value[k])))
+            except (TypeError, ValueError):
+                pass
+    set_json(db, "memory", cur)
+    return cur

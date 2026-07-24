@@ -45,6 +45,10 @@ const defaultPrefs = {
   comicZoom: 100,         // 50~300 (%)
   tapMode: 'lr',          // lr(좌우) | tb(상하) | off
   tapInvert: false,       // 좌우 반전(우철 만화)
+  autoNext: true,         // 마지막에서 다음 권 자동 열기
+  epubLite: 'auto',       // auto | always | never (대용량 EPUB 경량 리더)
+  epubLiteMB: 60,         // 이 크기(MB)를 넘으면 경량 리더 사용
+  epubPrefetch: 3,        // 읽는 동안 미리 받아둘 다음 조각 수 (0=끄기)
   fontSize: 110,          // %
   fontFamily: 'sans',     // sans | serif
   lineHeight: 1.7,
@@ -473,6 +477,7 @@ async function viewLibraries(view){
    전체보기 목록 (홈 섹션 → 더보기)
    ========================================================================== */
 const LIST_TYPES = {
+  'unread-books':  {title:'안 읽은 책', ep:'/api/books', kind:'book', sort:'created', order:'desc', extra:{progress:'unread'}},
   'fav-series':    {title:'즐겨찾기 시리즈', ep:'/api/series', kind:'series', sort:'favorite', order:'desc', extra:{favorite:'true'}},
   'fav-books':     {title:'즐겨찾기 책',     ep:'/api/books',  kind:'book',   sort:'favorite', order:'desc', extra:{favorite:'true'}},
   'added-books':   {title:'최근 추가된 책',       ep:'/api/books',  kind:'book',   sort:'created', order:'desc'},
@@ -622,7 +627,7 @@ async function viewSearch(view){
   clear(view);
   const q0 = currentQuery();
   let mode = 'series', tag = null, library = null;
-  const input = h('input',{class:'input', placeholder:'제목, 작가로 검색', value:q0});
+  const input = h('input',{class:'input', placeholder:'제목·작가 검색 (초성 가능: ㄴㅎㅈㅁ)', value:q0});
   const modeSeg = h('div',{class:'seg'},
     h('button',{class:'on',onclick:()=>{mode='series';go();}},'시리즈'),
     h('button',{onclick:()=>{mode='books';go();}},'책')
@@ -633,6 +638,10 @@ async function viewSearch(view){
      ...(state.libraries||[]).map(l=>h('option',{value:l.id}, l.name+(l.restricted?' 🔒':''))));
 
   let onlyFav = false, minRating = 0;
+  let onlyUnread = false;
+  const unreadChip = h('span',{class:'chip', onclick:()=>{
+    onlyUnread=!onlyUnread; unreadChip.className='chip'+(onlyUnread?' active':''); go();
+  }},'📖 안 읽은 것만');
   const favChip = h('span',{class:'chip', onclick:()=>{
     onlyFav=!onlyFav; favChip.className='chip'+(onlyFav?' active':''); go();
   }},'★ 즐겨찾기만');
@@ -646,7 +655,7 @@ async function viewSearch(view){
   const results = h('div',{});
   view.append(
     h('div',{class:'filterbar'}, h('div',{style:{flex:'1',minWidth:'180px'}}, input), modeSeg, libSel),
-    h('div',{class:'filterbar',style:{marginTop:'-2px'}}, favChip, rateSel),
+    h('div',{class:'filterbar',style:{marginTop:'-2px'}}, favChip, unreadChip, rateSel),
     tagHead, tagBar, results);
 
   let timer=null;
@@ -680,8 +689,8 @@ async function viewSearch(view){
     modeSeg.children[0].className = mode==='series'?'on':'';
     modeSeg.children[1].className = mode==='books'?'on':'';
     if(location.hash.indexOf('search')>=0) history.replaceState(null,'','#/search?q='+encodeURIComponent(q));
-    if(!q && !tag && !onlyFav && !minRating){
-      clear(results).append(h('div',{class:'center-pad'},'검색어를 입력하거나 태그·즐겨찾기·별점으로 찾아보세요.'));
+    if(!q && !tag && !onlyFav && !minRating && !onlyUnread){
+      clear(results).append(h('div',{class:'center-pad'},'검색어(초성도 가능: ㄴㅎㅈㅁ)를 입력하거나 태그·즐겨찾기·별점으로 찾아보세요.'));
       return;
     }
     clear(results).append(h('div',{class:'spinner'}));
@@ -690,6 +699,7 @@ async function viewSearch(view){
     if(tag) p.set('tag', tag);
     if(library) p.set('library', library);
     if(onlyFav) p.set('favorite','true');
+    if(onlyUnread) p.set('progress','unread');
     if(minRating) p.set('min_rating', String(minRating));
     p.set('size','100');
     let data;
@@ -697,6 +707,7 @@ async function viewSearch(view){
     catch(e){ clear(results).append(h('div',{class:'center-pad'}, e.message)); return; }
     clear(results);
     const label = [q?`'${q}'`:null, tag?`#${tag}`:null, onlyFav?'즐겨찾기':null,
+                   onlyUnread?'안 읽음':null,
                    minRating?`★${minRating} 이상`:null].filter(Boolean).join(' + ');
     if(!data.items.length){ results.append(h('div',{class:'center-pad'},`${label} 검색 결과가 없습니다.`)); return; }
     results.append(h('div',{class:'muted',style:{fontSize:'13px',margin:'0 2px 10px'}},
@@ -896,12 +907,20 @@ async function viewSettings(view){
       settingRow('터치 구역', segPick(['lr','tb','off'],['좌·우','위·아래','끄기'],
         prefs.tapMode||'lr', v=>{prefs.tapMode=v;savePrefs();})),
       settingRow('방향 반전', segPick([false,true],['보통','반전(우철)'],
-        !!prefs.tapInvert, v=>{prefs.tapInvert=v;savePrefs();}))
+        !!prefs.tapInvert, v=>{prefs.tapInvert=v;savePrefs();})),
+      settingRow('다음 권 자동 열기', segPick([true,false],['켜기','끄기'],
+        !!prefs.autoNext, v=>{prefs.autoNext=v;savePrefs();}))
     )),
     card('전자책 / 텍스트 뷰어', h('div',{},
       settingRow('글꼴', fontFam),
       settingRow('테마', themePick),
-      settingRow('EPUB 보기', segPick(['paginated','scrolled'],['쪽넘김','스크롤'],prefs.epubFlow,v=>{prefs.epubFlow=v;savePrefs();}))
+      settingRow('EPUB 보기', segPick(['paginated','scrolled'],['쪽넘김','스크롤'],prefs.epubFlow,v=>{prefs.epubFlow=v;savePrefs();})),
+      settingRow('큰 EPUB 경량 모드', segPick(['auto','always','never'],['자동','항상','끄기'],
+        prefs.epubLite||'auto', v=>{prefs.epubLite=v;savePrefs();})),
+      settingRow('읽는 중 미리 받기', segPick([0,3,10],['끄기','3개','10개'],
+        prefs.epubPrefetch||0, v=>{prefs.epubPrefetch=v;savePrefs();})),
+      h('p',{class:'muted',style:{fontSize:'12px',margin:'2px 2px 0'}},
+        `수백 MB~GB 짜리 EPUB 은 챕터 단위로만 받아 바로 열립니다. 기준 ${prefs.epubLiteMB||60}MB.`)
     )),
     card('홈 화면 구성', homeOrderEditor()),
     h('p',{class:'muted',style:{fontSize:'12.5px',marginTop:'8px'}},'글자 크기·줄 간격은 각 뷰어의 Aa 버튼에서 실시간으로 조절할 수 있습니다.')
@@ -974,6 +993,7 @@ async function viewAdmin(view){
     ['libraries','라이브러리', adminLibraries],
     ['scan','예약·규칙', adminScanSettings],
     ['trash','휴지통', adminTrash],
+    ['tools','정리·백업', adminTools],
     ['analytics','분석', adminAnalytics],
     ['users','사용자', adminUsers],
   ];
@@ -1325,6 +1345,46 @@ async function adminScanSettings(body){
   try{ th=await api('/api/threads'); }catch(e){}
   clear(body);
 
+  // ---- 메모리 설정 ----
+  let mem={};
+  try{ mem=await api('/api/memory'); }catch(e){}
+  const cacheIn=h('input',{class:'input',type:'number',min:'2',max:'4096',
+    value:String(mem.cache_mb||40),style:{maxWidth:'100px'}});
+  const mmapIn=h('input',{class:'input',type:'number',min:'0',max:'8192',
+    value:String(mem.mmap_mb||256),style:{maxWidth:'100px'}});
+  const homeIn=h('input',{class:'input',type:'number',min:'0',max:'600',
+    value:String(mem.home_cache_sec!=null?mem.home_cache_sec:20),style:{maxWidth:'100px'}});
+  const ramTxt = mem.system_ram_mb
+    ? `이 NAS 의 RAM ${(mem.system_ram_mb/1024).toFixed(1)}GB` : 'RAM 정보를 읽을 수 없습니다';
+  const preset=(label, cm, mm, hc)=> h('button',{class:'btn sm',onclick:()=>{
+    cacheIn.value=String(cm); mmapIn.value=String(mm); homeIn.value=String(hc);
+  }}, label);
+  body.append(
+    h('h3',{style:{margin:'4px 0 8px'}},'메모리 설정'),
+    h('p',{class:'muted',style:{fontSize:'13px',marginTop:0}},
+      `${ramTxt}. 값을 올리면 목록·검색 같은 반복 조회가 빨라집니다. 저장하면 바로 적용됩니다.`),
+    h('div',{class:'card-box'},
+      h('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px'}},
+        preset('절약 (2GB급)', 40, 128, 20),
+        preset('기본 (4~8GB)', 128, 512, 30),
+        preset('넉넉 (16GB+)', 512, 2048, 60)),
+      h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'DB 페이지 캐시 (MB)'), cacheIn),
+      h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'DB mmap 크기 (MB)'), mmapIn),
+      h('label',{class:'sched-row'}, h('span',{style:{flex:'1'}},'홈 화면 캐시 (초)'), homeIn),
+      h('p',{class:'muted',style:{fontSize:'12px',margin:'8px 0 0'}},
+        `현재 적용값: 캐시 ${(mem.applied&&mem.applied.cache_mb)||'?'}MB · mmap ${(mem.applied&&mem.applied.mmap_mb)||'?'}MB`),
+      h('div',{style:{marginTop:'10px'}},
+        h('button',{class:'btn primary',onclick:async(ev)=>{
+          ev.target.disabled=true;
+          try{
+            const r=await api('/api/memory',{method:'PUT',body:{
+              cache_mb:parseInt(cacheIn.value)||40, mmap_mb:parseInt(mmapIn.value)||256,
+              home_cache_sec:parseInt(homeIn.value)||0}});
+            toast(`적용됨 · 캐시 ${r.applied.cache_mb}MB · mmap ${r.applied.mmap_mb}MB`);
+          }catch(e){ toast(e.message); }
+          ev.target.disabled=false;
+        }},'메모리 설정 저장'))));
+
   // ---- 데이터베이스 최적화 ----
   let dbi={};
   try{ dbi=await api('/api/db/info'); }catch(e){}
@@ -1475,6 +1535,103 @@ async function adminScanSettings(body){
 }
 
 /* ==========================================================================
+   관리 - 중복 찾기 / 백업·복원
+   ========================================================================== */
+async function adminTools(body){
+  clear(body);
+
+  // ---- 중복 찾기 ----
+  const dupWrap = h('div',{});
+  const modeSel = h('select',{class:'input',style:{width:'auto'},onchange:()=>loadDups()},
+    h('option',{value:'size_name'},'크기+파일명이 같은 것'),
+    h('option',{value:'title'},'제목이 같은 것(넓게)'));
+  body.append(
+    h('h3',{style:{margin:'4px 0 8px'}},'중복 파일 찾기'),
+    h('p',{class:'muted',style:{fontSize:'13px',marginTop:0}},
+      '같은 작품이 여러 번 등록된 경우를 찾습니다. 정리해도 NAS 의 원본 파일은 삭제되지 않고 목록에서만 빠집니다(휴지통).'),
+    h('div',{class:'filterbar'}, modeSel,
+      h('button',{class:'btn',onclick:()=>loadDups()},'다시 검사')),
+    dupWrap);
+
+  async function loadDups(){
+    clear(dupWrap).append(h('div',{class:'spinner'}));
+    let j;
+    try{ j = await api('/api/duplicates?mode='+modeSel.value); }
+    catch(e){ clear(dupWrap).append(h('div',{class:'err'}, e.message)); return; }
+    clear(dupWrap);
+    if(!j.group_count){ dupWrap.append(h('div',{class:'center-pad'},'중복이 없습니다. 👍')); return; }
+    dupWrap.append(h('div',{class:'muted',style:{fontSize:'13px',margin:'0 0 10px'}},
+      `${j.group_count}개 그룹 · 중복으로 낭비되는 용량 약 ${fmtSize(j.wasted)}`));
+    j.groups.forEach(g=>{
+      const box = h('div',{class:'card-box',style:{marginBottom:'10px'}});
+      box.append(h('div',{style:{fontWeight:'650',marginBottom:'6px'}}, g[0].title,
+        h('span',{class:'muted',style:{fontSize:'12px',marginLeft:'6px'}}, `${g.length}건 · ${fmtSize(g[0].size)}`)));
+      const boxes = [];
+      g.forEach((b,i)=>{
+        const cb = h('input',{type:'checkbox', ...(i>0?{checked:'checked'}:{})});
+        boxes.push([cb,b]);
+        box.append(h('label',{class:'order-row'}, cb,
+          h('span',{style:{flex:'1',minWidth:0,fontSize:'12px',wordBreak:'break-all'}}, b.path),
+          i===0?h('span',{class:'badge-pill'},'원본 추천'):null));
+      });
+      box.append(h('div',{style:{marginTop:'8px',display:'flex',gap:'8px'}},
+        h('button',{class:'btn sm danger',onclick:async(ev)=>{
+          const ids = boxes.filter(([cb])=>cb.checked).map(([,b])=>b.id);
+          if(!ids.length){ toast('선택된 항목이 없습니다.'); return; }
+          if(!confirm(`${ids.length}건을 휴지통으로 보낼까요? (원본 파일은 그대로 남습니다)`)) return;
+          ev.target.disabled=true;
+          try{ const r=await api('/api/duplicates/resolve',{method:'POST',body:{ids}});
+            toast(`${r.count}건 정리됨`); loadDups(); }
+          catch(e){ toast(e.message); ev.target.disabled=false; }
+        }},'선택 항목 휴지통으로')));
+      dupWrap.append(box);
+    });
+  }
+  loadDups();
+
+  // ---- 백업 / 복원 ----
+  const fileIn = h('input',{type:'file',accept:'application/json,.json',style:{display:'none'},
+    onchange:async(e)=>{
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      try{
+        const data = JSON.parse(await f.text());
+        if(!confirm('백업을 복원하면 현재 별점·읽은 기록·즐겨찾기·수동 태그가 백업 내용으로 덮어써집니다. 계속할까요?')) return;
+        const r = await api('/api/restore',{method:'POST',body:data});
+        const a = r.applied;
+        toast(`복원 완료 · 기록 ${a.progress} · 별점 ${a.ratings+a.series_ratings} · 즐겨찾기 ${a.favorites} · 태그 ${a.manual_tags}`);
+      }catch(err){ toast('복원 실패: '+err.message); }
+      e.target.value='';
+    }});
+
+  body.append(
+    h('h3',{style:{margin:'22px 0 8px'}},'백업 / 복원'),
+    h('p',{class:'muted',style:{fontSize:'13px',marginTop:0}},
+      '별점·즐겨찾기·읽은 기록·수동 태그·설정을 파일로 저장합니다. 파일 경로를 기준으로 저장하므로 DB 를 새로 만들고 다시 스캔해도 되돌릴 수 있습니다. (책 파일 자체는 포함되지 않습니다)'),
+    h('div',{class:'card-box'},
+      h('div',{style:{display:'flex',gap:'8px',flexWrap:'wrap'}},
+        h('button',{class:'btn primary',onclick:async(ev)=>{
+          ev.target.disabled=true;
+          try{
+            const data = await api('/api/backup');
+            const blob = new Blob([JSON.stringify(data,null,1)],{type:'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const d = new Date().toISOString().slice(0,10);
+            a.href=url; a.download=`librario-backup-${d}.json`; a.click();
+            setTimeout(()=>URL.revokeObjectURL(url), 2000);
+            const cn = data.counts;
+            toast(`백업 저장됨 · 기록 ${cn.progress} · 별점 ${cn.ratings+cn.series_ratings} · 태그 ${cn.manual_tags}`);
+          }catch(e){ toast(e.message); }
+          ev.target.disabled=false;
+        }},'백업 파일 내려받기'),
+        h('button',{class:'btn',onclick:()=>fileIn.click()},'백업 파일에서 복원'),
+        fileIn),
+      h('p',{class:'muted',style:{fontSize:'12px',margin:'10px 0 0'}},
+        '정기적으로 받아 NAS 밖(PC·클라우드)에도 보관해 두면 안전합니다.')));
+}
+
+/* ==========================================================================
    관리 - 휴지통
    ========================================================================== */
 async function adminTrash(body){
@@ -1568,12 +1725,30 @@ function fmtDateTime(iso){ if(!iso) return ''; const d=new Date(iso); return d.t
 function openBook(book){
   const fmt = book.format || book.fmt;
   if(fmt==='cbz' || fmt==='zip') openComicReader(book);
-  else if(fmt==='epub') openEpubReader(book);
+  else if(fmt==='epub'){
+    // 큰 EPUB 은 파일 전체를 받으면 기기가 버티지 못하므로 챕터 단위 경량 리더 사용
+    const big = (book.file_size||0) > (prefs.epubLiteMB||60)*1024*1024;
+    if(prefs.epubLite==='never') openEpubReader(book);
+    else if(big || prefs.epubLite==='always') openEpubLite(book);
+    else openEpubReader(book);
+  }
   else if(fmt==='pdf') openPdfReader(book);
   else if(fmt==='txt') openTxtReader(book);
   else toast('지원하지 않는 형식입니다.');
 }
 let progressTimer=null;
+/* 다음 권 자동 이어읽기 — 마지막 페이지에서 한 번 더 넘기면 다음 권을 연다 */
+async function offerNextBook(book, opener){
+  if(!prefs.autoNext) return false;
+  let nb = null;
+  try{ nb = (await api(`/api/books/${book.id}/next`)).next; }catch(e){ return false; }
+  if(!nb) { toast('시리즈의 마지막 권입니다.'); return false; }
+  toast('다음 권으로 이동: ' + nb.title);
+  closeOverlay();
+  setTimeout(()=>{ (opener||openBook)(nb); }, 120);
+  return true;
+}
+
 function saveProgress(bookId, payload){
   clearTimeout(progressTimer);
   progressTimer = setTimeout(()=>{ api('/api/books/'+bookId+'/progress',{method:'PUT',body:payload}).catch(()=>{}); }, 600);
@@ -1676,7 +1851,11 @@ async function openComicReader(book){
     }
   }
   function showPage(){ if(bodyWrap._img) bodyWrap._img.src = `/api/books/${b.id}/pages/${cur}`; }
-  function goTo(n){ if(n<0||n>=pages) return; setCur(n); if(mode==='paged'){ showPage(); bodyWrap.scrollTop=0; } else scrollToPage(n); }
+  function goTo(n){
+    if(n >= pages){ offerNextBook(b, openBook); return; }   // 마지막 → 다음 권
+    if(n < 0) return;
+    setCur(n); if(mode==='paged'){ showPage(); bodyWrap.scrollTop=0; } else scrollToPage(n);
+  }
   function scrollToPage(n, save=true){
     const el = bodyWrap.querySelector(`img[data-page="${n}"]`);
     if(el) el.scrollIntoView({block:'start'});
@@ -1740,7 +1919,9 @@ const CDN = {
 /* EPUB 전용 터치 처리.
    오버레이(.tap-zones)를 쓰면 스크롤 제스처가 막히므로, 클릭 좌표로 영역을 판정한다.
    스크롤 모드에서는 화면 단위로 즉시 내려가고, 끝에 닿았을 때만 다음 챕터로 넘어간다. */
-function attachEpubTaps(rendition, area, reader){
+function attachEpubTaps(rendition, area, reader, b){
+  let epubAtEnd = false;
+  rendition.on('relocated', loc=>{ try{ epubAtEnd = !!loc.atEnd; }catch(e){} });
   function scroller(){
     if(area.scrollHeight - area.clientHeight > 4) return area;
     for(const el of area.querySelectorAll('*')){
@@ -1761,13 +1942,13 @@ function attachEpubTaps(rendition, area, reader){
     if(zone === 'mid'){ reader.classList.toggle('hud-hidden'); return; }
     if(prefs.tapInvert) zone = (zone === 'prev') ? 'next' : 'prev';
 
-    if(prefs.epubFlow === 'scrolled'){
+    if(forceScroll || prefs.epubFlow === 'scrolled'){
       const sc = scroller();
       const step = Math.max(120, sc.clientHeight - 56);
       const atEnd = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 6;
       const atTop = sc.scrollTop <= 2;
       if(zone === 'next'){
-        if(atEnd){ rendition.next(); }
+        if(atEnd){ if(epubAtEnd) offerNextBook(b, openBook); else rendition.next(); }
         else { sc.scrollTop = sc.scrollTop + step; }   // 애니메이션 없이 즉시 이동
       }else{
         if(atTop){ rendition.prev(); }
@@ -1775,7 +1956,8 @@ function attachEpubTaps(rendition, area, reader){
       }
       return;
     }
-    if(zone === 'next') rendition.next(); else rendition.prev();
+    if(zone === 'next'){ if(epubAtEnd) offerNextBook(b, openBook); else rendition.next(); }
+    else rendition.prev();
   }
   // 본문(아이프레임) 내부 클릭
   rendition.on('rendered', (section, view)=>{
@@ -1787,6 +1969,191 @@ function attachEpubTaps(rendition, area, reader){
   // 본문 바깥 여백 클릭
   area.addEventListener('click', handle);
   return handle;
+}
+
+/* ==========================================================================
+   대용량 EPUB용 경량 리더
+   파일 전체(1~2GB)를 받지 않고 서버에서 챕터 하나씩만 받아 표시한다.
+   ========================================================================== */
+async function openEpubLite(book){
+  const b = await api('/api/books/'+book.id);
+  const aaBtn = h('button',{class:'icon-btn',html:IC.aa});
+  const imgBtn = h('button',{class:'icon-btn',html:IC.image,title:'삽화'});
+  const tocBtn = h('button',{class:'icon-btn',html:IC.list,title:'목차'});
+  const {reader} = readerShell(b.title, {themed:true, actions:[tocBtn, imgBtn, aaBtn]});
+  const area = h('div',{id:'epub-area', class:'epub-lite'});
+  const bottom = h('div',{class:'reader-bottom'});
+  const slider = h('input',{type:'range',min:'0',max:'100',value:'0',class:'pslider'});
+  const lbl = h('span',{class:'plabel'},'');
+  const preLbl = h('span',{class:'pre-badge'},'');
+  bottom.append(h('div',{class:'pageslider'},
+    h('button',{class:'icon-btn',html:IC.prev,onclick:()=>goPrev()}),
+    slider, lbl, preLbl,
+    h('button',{class:'icon-btn',html:IC.next,onclick:()=>goNext()})));
+  reader.append(area, bottom);
+  openOverlay(reader);
+
+  let cur = 0, part = 0, parts = 1, total = 0, chapters = [];
+  const cache = new Map();          // "index:part" -> 응답
+  const CACHE_MAX = 24;
+  let prefetching = false;
+
+  function ckey(i,p){ return i+':'+p; }
+  async function fetchUnit(i, p){
+    const k = ckey(i,p);
+    if(cache.has(k)) return cache.get(k);
+    const j = await api(`/api/books/${b.id}/chapter/${i}?part=${p}`);
+    cache.set(k, j);
+    if(cache.size > CACHE_MAX){ cache.delete(cache.keys().next().value); }
+    return j;
+  }
+  // 읽는 동안 뒤쪽 조각을 미리 받아둔다 (받아지는 즉시 바로 읽을 수 있음)
+  async function prefetchAhead(){
+    const n = prefs.epubPrefetch|0;
+    if(!n || prefetching) return;
+    prefetching = true;
+    try{
+      let i = cur, p = part, done = 0;
+      while(done < n){
+        const cu = cache.get(ckey(i,p));
+        const np = cu ? cu.parts : parts;
+        if(p + 1 < np){ p += 1; } else { i += 1; p = 0; }
+        if(i >= total) break;
+        if(!cache.has(ckey(i,p))){
+          preLbl.textContent = `미리 받는 중 ${done+1}/${n}`;
+          try{ await fetchUnit(i,p); }catch(e){ break; }
+        }
+        done += 1;
+      }
+    } finally {
+      prefetching = false;
+      preLbl.textContent = '';
+    }
+  }
+  try{
+    const t = await api('/api/books/'+b.id+'/toc');
+    chapters = t.chapters || []; total = chapters.length || t.spine_len || 0;
+  }catch(e){}
+  // 저장된 위치 복원 (형식: "lite:12@0.35")
+  let startFrac = 0;
+  const pos = b.progress && b.progress.position;
+  let startPart = 0;
+  if(pos && String(pos).startsWith('lite:')){
+    const m = String(pos).slice(5).split('@');
+    const cp = String(m[0]).split('.');
+    cur = parseInt(cp[0]) || 0; startPart = parseInt(cp[1]) || 0;
+    startFrac = parseFloat(m[1]) || 0;
+  }
+
+  applyLiteTheme();
+  function applyLiteTheme(){
+    const t = {light:{bg:'#faf7f2',color:'#22201c'}, sepia:{bg:'#f4ecd8',color:'#3b3226'},
+               dark:{bg:'#16171c',color:'#c9c6be'}}[prefs.theme] || {bg:'#16171c',color:'#c9c6be'};
+    area.style.background = t.bg; area.style.color = t.color;
+    area.style.fontFamily = prefs.fontFamily==='serif'
+      ? 'Georgia, "Noto Serif KR", serif' : '-apple-system, "Noto Sans KR", sans-serif';
+    area.style.fontSize = (prefs.fontSize||110)+'%';
+    area.style.lineHeight = String(prefs.lineHeight||1.7);
+  }
+
+  async function go(i, frac, p){
+    p = p || 0;
+    if(!total || i<0 || i>=total){
+      if(i>=total && total) toast('마지막 장입니다.');
+      return;
+    }
+    const cached = cache.has(ckey(i,p));
+    if(!cached) clear(area).append(h('div',{class:'spinner'}));
+    let j;
+    try{ j = await fetchUnit(i,p); }
+    catch(e){ clear(area).append(h('div',{class:'center-pad'},'챕터를 불러오지 못했습니다: '+e.message)); return; }
+    cur = i; part = j.part||0; parts = j.parts||1;
+    const body = h('div',{class:'lite-body'});
+    body.innerHTML = j.html;   // 서버에서 script/on* 제거 후 전달
+    clear(area).append(body);
+    area.scrollTop = frac ? Math.round(area.scrollHeight*frac) : 0;
+    const pct = total? Math.round(((i+1)/total)*100) : 0;
+    slider.value = pct;
+    lbl.textContent = parts>1 ? `${i+1}/${total} (${part+1}/${parts})` : `${i+1}/${total}`;
+    saveProgress(b.id, {position:`lite:${i}.${part}@0`,
+                        completed: (i+1>=total && part+1>=parts)?true:undefined});
+    prefetchAhead();
+  }
+  // 다음/이전: 같은 챕터에 조각이 남아 있으면 조각 먼저
+  function goNext(){ if(part+1 < parts) go(cur, 0, part+1); else go(cur+1, 0, 0); }
+  function goPrev(){ if(part > 0) go(cur, 0, part-1); else go(cur-1, 0, 0); }
+  // 스크롤 위치도 주기적으로 저장
+  let sTimer=null;
+  area.addEventListener('scroll', ()=>{
+    clearTimeout(sTimer);
+    sTimer=setTimeout(()=>{
+      const frac = area.scrollHeight>area.clientHeight
+        ? (area.scrollTop/(area.scrollHeight-area.clientHeight)) : 0;
+      saveProgress(b.id, {position:`lite:${cur}.${part}@${frac.toFixed(3)}`});
+    }, 800);
+  });
+  slider.addEventListener('change', e=>{
+    const i = Math.min(total-1, Math.max(0, Math.round((+e.target.value/100)*total)-1));
+    go(i);
+  });
+
+  // 터치: 스크롤이 남아 있으면 화면 단위 이동, 끝이면 다음 챕터
+  const rend = { next: goNext, prev: goPrev };
+  attachEpubTaps({on:()=>{}, next:rend.next, prev:rend.prev}, area, reader, true);
+
+  tocBtn.addEventListener('click', ()=>openEpubTocLite(b.id, chapters, cur, go));
+  imgBtn.addEventListener('click', ()=>openEpubImagesLite(b.id, chapters, go));
+  const panel = textSettingsPanel(applyLiteTheme, ()=>{}, true, null);
+  reader.append(panel.node);
+  aaBtn.addEventListener('click', panel.toggle);
+
+  await go(cur, startFrac, startPart);
+}
+
+/* 경량 리더용 목차 */
+function openEpubTocLite(bookId, chapters, cur, go){
+  const listWrap = h('div',{class:'toc-list'});
+  const search = h('input',{class:'input',placeholder:`챕터 검색 (${chapters.length}개)`,style:{marginBottom:'10px'}});
+  const inner = h('div',{}, h('h3',{style:{marginTop:0}},'목차'), search, listWrap);
+  openSheet(inner);
+  let curEl=null;
+  function draw(f){
+    clear(listWrap);
+    const q=(f||'').trim().toLowerCase();
+    const shown = q? chapters.filter(c=>String(c.title).toLowerCase().includes(q)) : chapters;
+    if(!shown.length){ listWrap.append(h('div',{class:'center-pad'},'일치하는 챕터가 없습니다.')); return; }
+    shown.forEach(c=>{
+      const isCur = c.i===cur;
+      const row=h('div',{class:'toc-row'+(isCur?' cur':''), onclick:()=>{ closeOverlay(); go(c.i); }},
+        h('span',{class:'toc-num'}, String(c.i+1)), h('span',{class:'toc-title'}, c.title));
+      if(isCur) curEl=row;
+      listWrap.append(row);
+    });
+  }
+  search.addEventListener('input',()=>draw(search.value));
+  draw('');
+  if(curEl) setTimeout(()=>{ try{curEl.scrollIntoView({block:'center'});}catch(e){} },30);
+}
+
+/* 경량 리더용 삽화 */
+async function openEpubImagesLite(bookId, chapters, go){
+  const grid=h('div',{class:'img-grid'});
+  const inner=h('div',{}, h('h3',{style:{marginTop:0}},'삽화'),
+    h('p',{class:'muted',style:{fontSize:'12.5px',margin:'2px 0 12px'}},'이미지를 누르면 해당 챕터로 이동합니다.'), grid);
+  openSheet(inner);
+  grid.append(h('div',{class:'spinner'}));
+  let j;
+  try{ j=await api(`/api/books/${bookId}/epub-images`); }
+  catch(e){ clear(grid).append(h('div',{class:'center-pad'},e.message)); return; }
+  const list=j.images||[];
+  clear(grid);
+  if(!list.length){ grid.append(h('div',{class:'center-pad'},'이 책에는 삽화가 없습니다.')); return; }
+  const byHref = {}; chapters.forEach(c=>{ byHref[c.href]=c.i; });
+  list.slice(0,200).forEach(it=>{
+    grid.append(h('div',{class:'img-cell',title:it.title||'',onclick:()=>{
+      closeOverlay(); const i=byHref[it.chapter]; if(i!=null) go(i); else toast('이동할 수 없습니다.');
+    }}, h('img',{src:`/api/books/${bookId}/epub-thumb?href=${encodeURIComponent(it.href)}`,loading:'lazy',alt:''})));
+  });
 }
 
 async function openEpubReader(book){
@@ -1909,7 +2276,7 @@ async function openEpubReader(book){
   imgBtn.addEventListener('click', ()=>openEpubImages(b.id, rendition));
 
   // 화면 터치로 페이지/챕터 이동 (스크롤을 막지 않는 방식)
-  attachEpubTaps(rendition, area, reader);
+  attachEpubTaps(rendition, area, reader, b);
 }
 
 /* EPUB 챕터 목록 — 스캔 때 미리 분석해 둔 목차를 즉시 표시 */

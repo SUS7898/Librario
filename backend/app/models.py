@@ -64,6 +64,7 @@ class Series(Base):
     library_id = Column(ForeignKey("libraries.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(500), nullable=False)
     sort_name = Column(String(500), nullable=False, default="")
+    chosung = Column(String, index=True)
     path = Column(String(1024), unique=True, nullable=False)
     book_count = Column(Integer, nullable=False, default=0)  # status='active' 인 책 수
     cover_book_id = Column(Integer, nullable=True)  # 표지로 쓸 book id
@@ -98,6 +99,8 @@ class Book(Base):
     meta_updated_at = Column(DateTime, nullable=True) # 마지막 메타데이터 추출 시각
     # ---- 휴지통(소프트 삭제) ----
     status = Column(String(10), nullable=False, default="active", index=True)  # active | trashed
+    # 초성 검색 색인
+    chosung = Column(String, index=True)   # 초성 검색용
     # EPUB 목차/삽화 사전분석 결과(JSON 문자열)
     epub_meta = Column(Text)
     trashed_at = Column(DateTime, nullable=True)     # 휴지통 이동 시각

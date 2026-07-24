@@ -53,6 +53,18 @@ with TestClient(app) as c:
     r = c.get(f"/api/books/{bid}/epub-asset", params={"href":"../../etc/passwd"})
     check("경로 탈출 차단", r.status_code in (400,404))
 
+    # 챕터 단위 로딩 (대용량 EPUB 대응)
+    r = c.get(f"/api/books/{bid}/chapter/2")
+    cj = r.json()
+    check("챕터 API 200", r.status_code==200)
+    check("챕터 제목 반환", cj["title"]=="1. 시련의 탑")
+    check("본문 HTML 포함", "<p>" in cj["html"] and len(cj["html"])>500)
+    check("전체 파일보다 훨씬 작음", len(cj["html"]) < 100*1024)
+    check("script 제거", "<script" not in cj["html"].lower())
+    check("총 챕터 수 제공", cj["total"]==387)
+    r = c.get(f"/api/books/{bid}/chapter/9999")
+    check("범위 밖 챕터 404", r.status_code==404)
+
     # 스캔 옵션
     r = c.get("/api/scan/options")
     check("스캔 옵션 조회", r.status_code==200 and r.json()["epub_structure"] is True)

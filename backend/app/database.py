@@ -9,6 +9,23 @@ config.ensure_dirs()
 
 DATABASE_URL = f"sqlite:///{config.DB_PATH}"
 
+# 런타임에 바꿀 수 있는 메모리 설정 (관리 화면에서 조정 → 새 연결부터 적용)
+runtime_mem = {"cache_mb": config.DB_CACHE_MB, "mmap_mb": config.DB_MMAP_MB}
+
+
+def apply_memory_settings(cache_mb: int = None, mmap_mb: int = None) -> dict:
+    """DB 캐시/mmap 크기를 바꾸고 커넥션 풀을 재생성해 즉시 반영한다."""
+    if cache_mb is not None:
+        runtime_mem["cache_mb"] = max(2, min(4096, int(cache_mb)))
+    if mmap_mb is not None:
+        runtime_mem["mmap_mb"] = max(0, min(8192, int(mmap_mb)))
+    try:
+        engine.dispose()
+    except Exception:
+        pass
+    return dict(runtime_mem)
+
+
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False, "timeout": 20},
@@ -30,9 +47,9 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA busy_timeout=8000")
     # 대량 스캔 시 쓰기 처리량 향상 (수만 권 스캔에서 체감 차이가 큼)
-    cursor.execute("PRAGMA cache_size=-40000")   # 약 40MB 페이지 캐시
+    cursor.execute(f"PRAGMA cache_size=-{max(2, int(runtime_mem['cache_mb'])) * 1000}")
     cursor.execute("PRAGMA temp_store=MEMORY")
-    cursor.execute("PRAGMA mmap_size=268435456") # 256MB
+    cursor.execute(f"PRAGMA mmap_size={max(0, int(runtime_mem['mmap_mb'])) * 1024 * 1024}")
     cursor.close()
 
 
@@ -60,9 +77,11 @@ _COLUMN_MIGRATIONS = {
         ("status", "VARCHAR(10) NOT NULL DEFAULT 'active'"),
         ("trashed_at", "DATETIME"),
         ("epub_meta", "TEXT"),
+        ("chosung", "TEXT"),
     ],
     "series": [
         ("description", "TEXT"),
+        ("chosung", "TEXT"),
     ],
     "libraries": [
         ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
